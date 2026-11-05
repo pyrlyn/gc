@@ -167,19 +167,21 @@ fn opLru(n: i64, live: []?*Obj) void {
     }
 }
 
-const Op = struct { name: []const u8, f: *const fn (i64, []?*Obj) void };
+const Op = struct { name: [:0]const u8, f: *const fn (i64, []?*Obj) void };
 
 fn median(r: []f64) f64 {
     std.mem.sort(f64, r, {}, std.sort.asc(f64));
     return r[r.len / 2];
 }
 
-pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const args = try std.process.argsAlloc(arena.allocator());
-    const n: i64 = if (args.len > 1) try std.fmt.parseInt(i64, args[1], 10) else 4_000_000;
-    const only: ?[]const u8 = if (args.len > 2) args[2] else null;
+fn parseI64(s: [*:0]const u8) !i64 {
+    return std.fmt.parseInt(i64, std.mem.span(s), 10);
+}
+
+pub fn main(init: std.process.Init.Minimal) !void {
+    const argv = init.args.vector;
+    const n: i64 = if (argv.len > 1) try parseI64(argv[1]) else 4_000_000;
+    const only: ?[]const u8 = if (argv.len > 2) std.mem.span(argv[2]) else null;
     const nl: usize = 1 << 16;
     const live_raw = gc.rt_gc_mem_alloc(@sizeOf(?*Obj) * nl).?;
     const live: []?*Obj = @as([*]?*Obj, @ptrCast(@alignCast(live_raw)))[0..nl];
@@ -202,10 +204,12 @@ pub fn main() !void {
             op.f(n, live);
             r[rep] = @as(f64, @floatFromInt(host.rt_nanos() - t0)) / @as(f64, @floatFromInt(n));
         }
-        const stdout = std.io.getStdOut().writer();
-        try stdout.print("{s} {s} {d:.2}\n", .{ gc.rt_gc_name(), op.name, median(&r) });
+        _ = std.c.printf("%s %s %.2f\n", gc.rt_gc_name(), op.name.ptr, median(&r));
     }
     var st: kx.Stats = undefined;
     gc.rt_gc_stats(&st);
-    try std.io.getStdOut().writer().print("{s} pause_ms {d:.1}\n", .{ gc.rt_gc_name(), @as(f64, @floatFromInt(st.pause_ns_total)) / 1e6 });
+    _ = std.c.printf("%s pause_ms %.1f\n", gc.rt_gc_name(), @as(f64, @floatFromInt(st.pause_ns_total)) / 1e6);
+    // Peak RSS from this process (no argv-to-exec wrapper). Linux ru_maxrss is KiB;
+    // host.peakRssKb normalizes Darwin bytes → KiB.
+    _ = std.c.printf("%s peak_rss_kb %lld\n", gc.rt_gc_name(), @as(c_longlong, host.peakRssKb()));
 }
