@@ -1,0 +1,347 @@
+{
+  "kind": "c_baseline_pre_port",
+  "git_sha": "21f34a960f8b56d1dcdf1ab55b8e5e14e4e8ff31",
+  "recorded_utc": "2026-11-05T22:32:12Z",
+  "machine": {
+    "uname": "Linux cursor 6.12.94+ x86_64",
+    "os": "Ubuntu 24.04.5 LTS",
+    "cpu": "Intel(R) Xeon(R) Processor",
+    "nproc": 4,
+    "cpu_mhz": 2400.0,
+    "mem_total_kb": 16387280
+  },
+  "toolchain": {
+    "cc": "clang",
+    "cc_version": "Ubuntu clang version 18.1.3 (1ubuntu1)",
+    "opt_ops": "-O3 -flto",
+    "opt_unit": "-O1 and -O3",
+    "host_runtime": "artifacts/c-baseline/host/kx_runtime_host.c (Linux CLOCK_MONOTONIC stub; original runtime.c uses macOS clock_gettime_nsec_np)"
+  },
+  "workloads": {
+    "ops": {
+      "source": "bench/ops/ops.c",
+      "N": 4000000,
+      "rounds": 5,
+      "method": "median of 5 interleaved rounds; each binary already reports median of 5 inner reps"
+    },
+    "ops_size_sweep": {
+      "N": [
+        100000,
+        1000000,
+        4000000
+      ],
+      "rounds": 3,
+      "note": "supplementary size coverage after as-is ops.sh-equivalent"
+    },
+    "traversal": {
+      "source": "tests/archive/unit/traversal.c",
+      "N": [
+        4096,
+        16384,
+        32768
+      ],
+      "reps": 5,
+      "opt": "-O3"
+    }
+  },
+  "ops_ns_per_op_median": {
+    "perceus": {
+      "rc_pair": 1.67,
+      "field_store": 3.5,
+      "alloc_drop": 4.41,
+      "lru_move": 31.59,
+      "pause_ms": 1.1
+    },
+    "incremental": {
+      "rc_pair": 1.65,
+      "field_store": 3.46,
+      "alloc_drop": 4.38,
+      "lru_move": 31.11,
+      "pause_ms": 1.0
+    },
+    "epoch": {
+      "rc_pair": 9.37,
+      "field_store": 7.6,
+      "alloc_drop": 12.56,
+      "lru_move": 77.08,
+      "pause_ms": 467.1
+    },
+    "rc": {
+      "rc_pair": 1.66,
+      "field_store": 3.45,
+      "alloc_drop": 4.77,
+      "lru_move": 24.97,
+      "pause_ms": 0.0
+    }
+  },
+  "ops_raw": {
+    "perceus.rc_pair": [
+      1.67,
+      1.73,
+      1.71,
+      1.65,
+      1.64
+    ],
+    "perceus.field_store": [
+      3.49,
+      3.55,
+      3.5,
+      3.5,
+      3.44
+    ],
+    "perceus.alloc_drop": [
+      4.38,
+      4.53,
+      4.38,
+      4.41,
+      4.77
+    ],
+    "perceus.lru_move": [
+      31.59,
+      33.04,
+      31.68,
+      31.2,
+      31.0
+    ],
+    "perceus.pause_ms": [
+      1.1,
+      1.1,
+      1.1,
+      1.1,
+      1.1
+    ],
+    "incremental.rc_pair": [
+      1.7,
+      1.71,
+      1.65,
+      1.65,
+      1.65
+    ],
+    "incremental.field_store": [
+      3.48,
+      3.46,
+      3.46,
+      3.43,
+      3.47
+    ],
+    "incremental.alloc_drop": [
+      4.37,
+      4.37,
+      4.38,
+      4.39,
+      4.38
+    ],
+    "incremental.lru_move": [
+      31.29,
+      31.09,
+      31.12,
+      31.11,
+      31.1
+    ],
+    "incremental.pause_ms": [
+      1.0,
+      1.0,
+      1.1,
+      1.0,
+      1.0
+    ],
+    "epoch.rc_pair": [
+      9.45,
+      9.37,
+      8.83,
+      8.66,
+      9.38
+    ],
+    "epoch.field_store": [
+      7.6,
+      7.76,
+      7.78,
+      7.47,
+      7.34
+    ],
+    "epoch.alloc_drop": [
+      12.43,
+      12.02,
+      12.75,
+      12.56,
+      12.98
+    ],
+    "epoch.lru_move": [
+      77.08,
+      74.38,
+      77.66,
+      77.5,
+      75.84
+    ],
+    "epoch.pause_ms": [
+      457.1,
+      442.9,
+      477.9,
+      467.1,
+      474.3
+    ],
+    "rc.rc_pair": [
+      1.71,
+      1.65,
+      1.66,
+      1.66,
+      1.7
+    ],
+    "rc.field_store": [
+      3.45,
+      3.44,
+      3.48,
+      3.45,
+      3.57
+    ],
+    "rc.alloc_drop": [
+      4.86,
+      4.69,
+      4.77,
+      4.72,
+      4.97
+    ],
+    "rc.lru_move": [
+      24.92,
+      24.42,
+      25.05,
+      24.97,
+      26.47
+    ],
+    "rc.pause_ms": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "ops_size_median": {
+    "100000.perceus.rc_pair": 1.7,
+    "100000.perceus.field_store": 3.55,
+    "100000.perceus.alloc_drop": 4.65,
+    "100000.perceus.lru_move": 33.85,
+    "100000.perceus.pause_ms": 1.2,
+    "100000.incremental.rc_pair": 1.7,
+    "100000.incremental.field_store": 3.54,
+    "100000.incremental.alloc_drop": 4.43,
+    "100000.incremental.lru_move": 35.12,
+    "100000.incremental.pause_ms": 1.0,
+    "100000.epoch.rc_pair": 10.8,
+    "100000.epoch.field_store": 7.53,
+    "100000.epoch.alloc_drop": 12.43,
+    "100000.epoch.lru_move": 74.6,
+    "100000.epoch.pause_ms": 17.0,
+    "100000.rc.rc_pair": 1.78,
+    "100000.rc.field_store": 3.58,
+    "100000.rc.alloc_drop": 5.14,
+    "100000.rc.lru_move": 27.55,
+    "100000.rc.pause_ms": 0.0,
+    "1000000.perceus.rc_pair": 1.71,
+    "1000000.perceus.field_store": 3.47,
+    "1000000.perceus.alloc_drop": 4.44,
+    "1000000.perceus.lru_move": 31.95,
+    "1000000.perceus.pause_ms": 1.1,
+    "1000000.incremental.rc_pair": 1.71,
+    "1000000.incremental.field_store": 3.52,
+    "1000000.incremental.alloc_drop": 4.43,
+    "1000000.incremental.lru_move": 31.95,
+    "1000000.incremental.pause_ms": 1.0,
+    "1000000.epoch.rc_pair": 8.97,
+    "1000000.epoch.field_store": 7.51,
+    "1000000.epoch.alloc_drop": 12.65,
+    "1000000.epoch.lru_move": 77.69,
+    "1000000.epoch.pause_ms": 118.3,
+    "1000000.rc.rc_pair": 1.7,
+    "1000000.rc.field_store": 3.47,
+    "1000000.rc.alloc_drop": 4.63,
+    "1000000.rc.lru_move": 24.97,
+    "1000000.rc.pause_ms": 0.0,
+    "4000000.perceus.rc_pair": 1.66,
+    "4000000.perceus.field_store": 3.47,
+    "4000000.perceus.alloc_drop": 4.39,
+    "4000000.perceus.lru_move": 30.39,
+    "4000000.perceus.pause_ms": 1.1,
+    "4000000.incremental.rc_pair": 1.74,
+    "4000000.incremental.field_store": 3.5,
+    "4000000.incremental.alloc_drop": 4.38,
+    "4000000.incremental.lru_move": 31.2,
+    "4000000.incremental.pause_ms": 1.0,
+    "4000000.epoch.rc_pair": 9.41,
+    "4000000.epoch.field_store": 7.18,
+    "4000000.epoch.alloc_drop": 12.34,
+    "4000000.epoch.lru_move": 76.46,
+    "4000000.epoch.pause_ms": 436.0,
+    "4000000.rc.rc_pair": 1.74,
+    "4000000.rc.field_store": 3.51,
+    "4000000.rc.alloc_drop": 4.76,
+    "4000000.rc.lru_move": 25.78,
+    "4000000.rc.pause_ms": 0.0
+  },
+  "ops_peak_rss_kb": {
+    "perceus_stats": "gc-stats: gc=perceus collections=4 reclaimed=0 pause_total=3.282 pause_max=2.215 pause_p50=0.292 pause_p99=2.215",
+    "perceus": 11644,
+    "incremental_stats": "gc-stats: gc=incremental collections=4 reclaimed=0 pause_total=3.435 pause_max=2.364 pause_p50=0.284 pause_p99=2.364",
+    "incremental": 11640,
+    "epoch_stats": "gc-stats: gc=epoch collections=25 reclaimed=0 pause_total=343.164 pause_max=1.268 pause_p50=0.001 pause_p99=0.037",
+    "epoch": 11628,
+    "rc_stats": "gc-stats: gc=rc collections=0 reclaimed=0 pause_total=0.000 pause_max=0.000 pause_p50=0.000 pause_p99=0.000",
+    "rc": 11628
+  },
+  "traversal_median": {
+    "perceus.4096": {
+      "work_bytes": 2048,
+      "pause_total_ns": 3047715,
+      "pause_max_ns": 1624361,
+      "peak_rss_kb": 11632,
+      "n": 5
+    },
+    "incremental.4096": {
+      "work_bytes": 2048,
+      "pause_total_ns": 2960881,
+      "pause_max_ns": 1493948,
+      "peak_rss_kb": 11632,
+      "n": 5
+    },
+    "perceus.16384": {
+      "work_bytes": 2048,
+      "pause_total_ns": 11838943,
+      "pause_max_ns": 6074407,
+      "peak_rss_kb": 11632,
+      "n": 5
+    },
+    "incremental.16384": {
+      "work_bytes": 2048,
+      "pause_total_ns": 11879181,
+      "pause_max_ns": 6073813,
+      "peak_rss_kb": 11628,
+      "n": 5
+    },
+    "perceus.32768": {
+      "work_bytes": 2048,
+      "pause_total_ns": 23848809,
+      "pause_max_ns": 12396556,
+      "peak_rss_kb": 19888,
+      "n": 5
+    },
+    "incremental.32768": {
+      "work_bytes": 2048,
+      "pause_total_ns": 24019527,
+      "pause_max_ns": 12557603,
+      "peak_rss_kb": 19876,
+      "n": 5
+    }
+  },
+  "unit_tests": {
+    "command": "clang -O1/-O3 archive unit tests + one_pass",
+    "results": "11 PASS, 1 SKIP (epoch gc-unit, deferred RC), 0 FAIL",
+    "log": "artifacts/c-baseline/logs/unit-summary.txt"
+  },
+  "not_run": [
+    "bench/micro.sh (needs newkotlinc + KotlinX runtime/compiler)",
+    "bench/compare.sh (needs newkotlinc + bench/nkbench.sh)",
+    "bench/zig (Kotlin harness, needs newkotlinc)",
+    "tests/kt and tests/epoch/*.kt (need newkotlinc)",
+    "Boehm third-party collector (left untouched)"
+  ]
+}

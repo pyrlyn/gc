@@ -1,0 +1,185 @@
+# start: 2026-11-05T22:32:57Z load=0.33 0.21 0.10 1/254 3441
+## N=100000
+N=100000 round=1 perceus rc_pair 1.69
+perceus field_store 3.40
+perceus alloc_drop 4.76
+perceus lru_move 33.57
+perceus pause_ms 1.2
+N=100000 round=1 incremental rc_pair 1.73
+incremental field_store 3.59
+incremental alloc_drop 4.30
+incremental lru_move 35.12
+incremental pause_ms 1.0
+N=100000 round=1 epoch rc_pair 10.63
+epoch field_store 7.08
+epoch alloc_drop 12.96
+epoch lru_move 74.60
+epoch pause_ms 17.0
+N=100000 round=1 rc rc_pair 1.78
+rc field_store 3.73
+rc alloc_drop 5.44
+rc lru_move 27.55
+rc pause_ms 0.0
+N=100000 round=2 perceus rc_pair 1.73
+perceus field_store 3.66
+perceus alloc_drop 4.65
+perceus lru_move 33.85
+perceus pause_ms 1.1
+N=100000 round=2 incremental rc_pair 1.68
+incremental field_store 3.54
+incremental alloc_drop 6.13
+incremental lru_move 35.15
+incremental pause_ms 1.0
+N=100000 round=2 epoch rc_pair 10.91
+epoch field_store 7.53
+epoch alloc_drop 12.25
+epoch lru_move 74.64
+epoch pause_ms 17.5
+N=100000 round=2 rc rc_pair 1.71
+rc field_store 3.58
+rc alloc_drop 4.90
+rc lru_move 28.24
+rc pause_ms 0.0
+N=100000 round=3 perceus rc_pair 1.70
+perceus field_store 3.55
+perceus alloc_drop 4.40
+perceus lru_move 34.57
+perceus pause_ms 1.2
+N=100000 round=3 incremental rc_pair 1.70
+incremental field_store 3.43
+incremental alloc_drop 4.43
+incremental lru_move 33.70
+incremental pause_ms 1.1
+N=100000 round=3 epoch rc_pair 10.80
+epoch field_store 7.83
+epoch alloc_drop 12.43
+epoch lru_move 74.57
+epoch pause_ms 16.9
+N=100000 round=3 rc rc_pair 1.82
+rc field_store 3.48
+rc alloc_drop 5.14
+rc lru_move 26.75
+rc pause_ms 0.0
+## N=1000000
+N=1000000 round=1 perceus rc_pair 1.74
+perceus field_store 3.46
+perceus alloc_drop 4.46
+perceus lru_move 31.02
+perceus pause_ms 1.1
+N=1000000 round=1 incremental rc_pair 1.70
+incremental field_store 3.52
+incremental alloc_drop 4.41
+incremental lru_move 31.13
+incremental pause_ms 1.0
+N=1000000 round=1 epoch rc_pair 8.97
+epoch field_store 8.22
+epoch alloc_drop 15.62
+epoch lru_move 82.20
+epoch pause_ms 140.7
+N=1000000 round=1 rc rc_pair 1.70
+rc field_store 3.40
+rc alloc_drop 5.33
+rc lru_move 24.87
+rc pause_ms 0.0
+N=1000000 round=2 perceus rc_pair 1.71
+perceus field_store 3.47
+perceus alloc_drop 4.44
+perceus lru_move 31.95
+perceus pause_ms 1.2
+N=1000000 round=2 incremental rc_pair 1.71
+incremental field_store 3.55
+incremental alloc_drop 4.43
+incremental lru_move 31.95
+incremental pause_ms 1.0
+N=1000000 round=2 epoch rc_pair 8.92
+epoch field_store 7.30
+epoch alloc_drop 12.65
+epoch lru_move 77.69
+epoch pause_ms 118.3
+N=1000000 round=2 rc rc_pair 1.69
+rc field_store 3.47
+rc alloc_drop 4.63
+rc lru_move 24.97
+rc pause_ms 0.0
+N=1000000 round=3 perceus rc_pair 1.69
+perceus field_store 3.59
+perceus alloc_drop 4.33
+perceus lru_move 31.95
+perceus pause_ms 1.1
+N=1000000 round=3 incremental rc_pair 1.73
+incremental field_store 3.48
+incremental alloc_drop 4.53
+incremental lru_move 32.01
+incremental pause_ms 1.0
+N=1000000 round=3 epoch rc_pair 10.21
+epoch field_store 7.51
+epoch alloc_drop 12.32
+epoch lru_move 75.11
+epoch pause_ms 113.4
+N=1000000 round=3 rc rc_pair 1.72
+rc field_store 3.50
+rc alloc_drop 4.42
+rc lru_move 25.13
+rc pause_ms 0.0
+## N=4000000
+N=4000000 round=1 perceus rc_pair 1.83
+perceus field_store 3.70
+perceus alloc_drop 4.57
+perceus lru_move 30.37
+perceus pause_ms 1.1
+N=4000000 round=1 incremental rc_pair 1.62
+incremental field_store 3.44
+incremental alloc_drop 4.38
+incremental lru_move 31.31
+incremental pause_ms 1.0
+N=4000000 round=1 epoch rc_pair 9.04
+epoch field_store 7.18
+epoch alloc_drop 12.73
+epoch lru_move 76.46
+epoch pause_ms 432.1
+N=4000000 round=1 rc rc_pair 1.74
+rc field_store 3.53
+rc alloc_drop 4.69
+rc lru_move 25.94
+rc pause_ms 0.0
+N=4000000 round=2 perceus rc_pair 1.62
+perceus field_store 3.42
+perceus alloc_drop 4.38
+perceus lru_move 30.39
+perceus pause_ms 1.1
+N=4000000 round=2 incremental rc_pair 1.82
+incremental field_store 3.66
+incremental alloc_drop 4.38
+incremental lru_move 31.20
+incremental pause_ms 1.0
+N=4000000 round=2 epoch rc_pair 9.50
+epoch field_store 7.60
+epoch alloc_drop 12.26
+epoch lru_move 94.83
+epoch pause_ms 436.0
+N=4000000 round=2 rc rc_pair 1.74
+rc field_store 3.51
+rc alloc_drop 4.76
+rc lru_move 25.71
+rc pause_ms 0.0
+N=4000000 round=3 perceus rc_pair 1.66
+perceus field_store 3.47
+perceus alloc_drop 4.39
+perceus lru_move 31.08
+perceus pause_ms 1.1
+N=4000000 round=3 incremental rc_pair 1.74
+incremental field_store 3.50
+incremental alloc_drop 4.49
+incremental lru_move 30.51
+incremental pause_ms 1.5
+N=4000000 round=3 epoch rc_pair 9.41
+epoch field_store 6.95
+epoch alloc_drop 12.34
+epoch lru_move 74.76
+epoch pause_ms 444.1
+N=4000000 round=3 rc rc_pair 1.63
+rc field_store 3.45
+rc alloc_drop 5.16
+rc lru_move 25.78
+rc pause_ms 0.0
+# end: 2026-11-05T22:33:15Z

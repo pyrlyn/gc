@@ -45,6 +45,20 @@ linked into every program.
 Full description (object layout, RC + Perceus, regions, cycle collector, ownership rules):
 [`docs/architecture.md`](docs/architecture.md).
 
+## Native Zig port (in progress)
+
+Zig **0.14.1**. The C sources remain the immutable reference (baseline SHA
+recorded under [`artifacts/c-baseline`](artifacts/c-baseline)). Zig collectors
+in [`src/`](src/) export the same `kxgc.h` ABI. Status and leftovers:
+[`docs/zig-port.md`](docs/zig-port.md). **Not performance-ready** versus the
+frozen C ops baseline.
+
+```
+zig build test                      # native suite, all collectors
+zig build --release=fast            # optimized test + ops binaries
+./zig-out/bin/gc-ops-perceus 4000000
+```
+
 ## Layout
 
 | path | contents |
@@ -53,9 +67,12 @@ Full description (object layout, RC + Perceus, regions, cycle collector, ownersh
 | `common/regions.inc` | RC and tracing regions, `rt_gc_mem_*` (RC implementations) |
 | `common/object.inc` | header/vtable accessors, colors, pointer stack |
 | `common/trial_deletion.inc` | MarkGray / Scan / CollectWhite passes and the adaptive threshold |
-| `<name>/gc.c`, `<name>/caps`, `<name>/config.sh` | one implementation |
+| `<name>/gc.c`, `<name>/caps`, `<name>/config.sh` | C reference implementation |
+| `src/` | native Zig collectors (same ABI) |
 | `tests/` | unit and Kotlin tests for every implementation |
+| `tests/native/` | Zig suite against the Zig collectors |
 | `docs/` | architecture, plans |
+| `artifacts/` | frozen C baseline and Zig bench logs |
 
 ## Environment variables
 

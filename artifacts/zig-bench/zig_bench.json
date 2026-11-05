@@ -1,0 +1,246 @@
+{
+  "kind": "zig_native_ops",
+  "zig_version": "0.14.1",
+  "optimize": "--release=fast + LTO",
+  "c_baseline_sha": "21f34a960f8b56d1dcdf1ab55b8e5e14e4e8ff31",
+  "ops_ns_per_op_median": {
+    "perceus": {
+      "rc_pair": 1.68,
+      "field_store": 4.25,
+      "alloc_drop": 5.53,
+      "lru_move": 33.49,
+      "pause_ms": 1.3
+    },
+    "incremental": {
+      "rc_pair": 2.16,
+      "field_store": 4.48,
+      "alloc_drop": 6.96,
+      "lru_move": 46.09,
+      "pause_ms": 1.3
+    },
+    "epoch": {
+      "rc_pair": 8.02,
+      "field_store": 8.11,
+      "alloc_drop": 42.27,
+      "lru_move": 85.53,
+      "pause_ms": 918.5
+    },
+    "rc": {
+      "rc_pair": 1.62,
+      "field_store": 4.03,
+      "alloc_drop": 5.47,
+      "lru_move": 33.56,
+      "pause_ms": 0.0
+    }
+  },
+  "ops_raw": {
+    "perceus.rc_pair": [
+      1.68,
+      1.65,
+      1.66,
+      2.71,
+      1.78
+    ],
+    "perceus.field_store": [
+      4.25,
+      4.01,
+      4.08,
+      6.72,
+      4.44
+    ],
+    "perceus.alloc_drop": [
+      5.53,
+      5.61,
+      5.46,
+      7.73,
+      5.46
+    ],
+    "perceus.lru_move": [
+      33.15,
+      32.86,
+      33.49,
+      33.9,
+      34.66
+    ],
+    "perceus.pause_ms": [
+      1.2,
+      1.3,
+      1.3,
+      1.5,
+      1.3
+    ],
+    "incremental.rc_pair": [
+      2.16,
+      2.17,
+      2.16,
+      2.16,
+      2.89
+    ],
+    "incremental.field_store": [
+      4.48,
+      4.41,
+      4.4,
+      4.68,
+      5.61
+    ],
+    "incremental.alloc_drop": [
+      6.96,
+      6.84,
+      6.9,
+      7.07,
+      7.05
+    ],
+    "incremental.lru_move": [
+      46.09,
+      45.3,
+      45.49,
+      47.37,
+      47.46
+    ],
+    "incremental.pause_ms": [
+      1.2,
+      1.3,
+      1.3,
+      1.3,
+      1.3
+    ],
+    "epoch.rc_pair": [
+      8.24,
+      7.53,
+      7.44,
+      8.02,
+      8.4
+    ],
+    "epoch.field_store": [
+      9.27,
+      7.83,
+      7.64,
+      8.11,
+      8.26
+    ],
+    "epoch.alloc_drop": [
+      40.9,
+      42.27,
+      44.41,
+      39.54,
+      44.12
+    ],
+    "epoch.lru_move": [
+      80.72,
+      83.29,
+      88.7,
+      88.03,
+      85.53
+    ],
+    "epoch.pause_ms": [
+      918.5,
+      902.4,
+      919.3,
+      869.7,
+      972.9
+    ],
+    "rc.rc_pair": [
+      1.62,
+      1.62,
+      1.62,
+      1.65,
+      1.65
+    ],
+    "rc.field_store": [
+      3.94,
+      4.03,
+      4.01,
+      4.45,
+      4.08
+    ],
+    "rc.alloc_drop": [
+      5.9,
+      5.75,
+      5.41,
+      5.47,
+      5.21
+    ],
+    "rc.lru_move": [
+      32.22,
+      32.46,
+      34.4,
+      33.93,
+      33.56
+    ],
+    "rc.pause_ms": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "ops_peak_rss_kb": {
+    "perceus": 11628,
+    "incremental": 11636,
+    "epoch": 11632,
+    "rc": 11636
+  },
+  "ops_size_median": {
+    "100000.perceus.rc_pair": 1.65,
+    "100000.perceus.field_store": 4.27,
+    "100000.perceus.alloc_drop": 5.5,
+    "100000.perceus.lru_move": 33.83,
+    "100000.perceus.pause_ms": 1.3,
+    "100000.incremental.rc_pair": 2.13,
+    "100000.incremental.field_store": 4.8,
+    "100000.incremental.alloc_drop": 7.04,
+    "100000.incremental.lru_move": 45.74,
+    "100000.incremental.pause_ms": 1.3,
+    "100000.epoch.rc_pair": 9.58,
+    "100000.epoch.field_store": 8.13,
+    "100000.epoch.alloc_drop": 43.1,
+    "100000.epoch.lru_move": 82.15,
+    "100000.epoch.pause_ms": 27.4,
+    "100000.rc.rc_pair": 1.62,
+    "100000.rc.field_store": 4.29,
+    "100000.rc.alloc_drop": 5.0,
+    "100000.rc.lru_move": 36.4,
+    "100000.rc.pause_ms": 0.0,
+    "1000000.perceus.rc_pair": 1.7,
+    "1000000.perceus.field_store": 4.26,
+    "1000000.perceus.alloc_drop": 5.55,
+    "1000000.perceus.lru_move": 34.61,
+    "1000000.perceus.pause_ms": 1.3,
+    "1000000.incremental.rc_pair": 2.17,
+    "1000000.incremental.field_store": 4.52,
+    "1000000.incremental.alloc_drop": 7.0,
+    "1000000.incremental.lru_move": 47.15,
+    "1000000.incremental.pause_ms": 1.3,
+    "1000000.epoch.rc_pair": 7.95,
+    "1000000.epoch.field_store": 8.16,
+    "1000000.epoch.alloc_drop": 41.0,
+    "1000000.epoch.lru_move": 88.21,
+    "1000000.epoch.pause_ms": 225.7,
+    "1000000.rc.rc_pair": 1.65,
+    "1000000.rc.field_store": 4.33,
+    "1000000.rc.alloc_drop": 6.02,
+    "1000000.rc.lru_move": 34.25,
+    "1000000.rc.pause_ms": 0.0,
+    "4000000.perceus.rc_pair": 1.73,
+    "4000000.perceus.field_store": 4.39,
+    "4000000.perceus.alloc_drop": 5.56,
+    "4000000.perceus.lru_move": 33.81,
+    "4000000.perceus.pause_ms": 1.4,
+    "4000000.incremental.rc_pair": 2.23,
+    "4000000.incremental.field_store": 4.87,
+    "4000000.incremental.alloc_drop": 7.02,
+    "4000000.incremental.lru_move": 47.83,
+    "4000000.incremental.pause_ms": 1.3,
+    "4000000.epoch.rc_pair": 7.96,
+    "4000000.epoch.field_store": 8.5,
+    "4000000.epoch.alloc_drop": 40.5,
+    "4000000.epoch.lru_move": 91.31,
+    "4000000.epoch.pause_ms": 998.8,
+    "4000000.rc.rc_pair": 1.66,
+    "4000000.rc.field_store": 4.22,
+    "4000000.rc.alloc_drop": 5.61,
+    "4000000.rc.lru_move": 34.06,
+    "4000000.rc.pause_ms": 0.0
+  }
+}

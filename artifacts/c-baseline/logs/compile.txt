@@ -1,0 +1,4 @@
+COMPILE perceus clang -O3 -flto -I/workspace 
+COMPILE incremental clang -O3 -flto -I/workspace 
+COMPILE epoch clang -O3 -flto -I/workspace  -DDEFERRED
+COMPILE rc clang -O3 -flto -I/workspace 

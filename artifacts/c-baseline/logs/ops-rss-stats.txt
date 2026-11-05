@@ -1,0 +1,35 @@
+# start: 2026-11-05T22:33:33Z load=0.47 0.27 0.12 1/241 3709
+# rss via os.wait4 ru_maxrss (KiB on Linux)
+## perceus
+perceus rc_pair 1.63
+perceus field_store 3.44
+perceus alloc_drop 4.38
+perceus lru_move 30.69
+perceus pause_ms 1.1
+gc-stats: gc=perceus collections=4 reclaimed=0 pause_total=3.282 pause_max=2.215 pause_p50=0.292 pause_p99=2.215
+elapsed_s=0.806 user_s=0.802 sys_s=0.004 peak_rss_kb=11644
+## incremental
+incremental rc_pair 1.83
+incremental field_store 3.72
+incremental alloc_drop 4.40
+incremental lru_move 32.79
+incremental pause_ms 1.1
+gc-stats: gc=incremental collections=4 reclaimed=0 pause_total=3.435 pause_max=2.364 pause_p50=0.284 pause_p99=2.364
+elapsed_s=0.863 user_s=0.863 sys_s=0.000 peak_rss_kb=11640
+## epoch
+epoch rc_pair 4.63
+epoch field_store 8.06
+epoch alloc_drop 12.56
+epoch lru_move 74.39
+epoch pause_ms 343.2
+gc-stats: gc=epoch collections=25 reclaimed=0 pause_total=343.164 pause_max=1.268 pause_p50=0.001 pause_p99=0.037
+elapsed_s=3.768 user_s=3.626 sys_s=0.142 peak_rss_kb=11628
+## rc
+rc rc_pair 1.68
+rc field_store 3.42
+rc alloc_drop 4.67
+rc lru_move 23.96
+rc pause_ms 0.0
+gc-stats: gc=rc collections=0 reclaimed=0 pause_total=0.000 pause_max=0.000 pause_p50=0.000 pause_p99=0.000
+elapsed_s=0.681 user_s=0.673 sys_s=0.008 peak_rss_kb=11628
+# end: 2026-11-05T22:33:37Z
