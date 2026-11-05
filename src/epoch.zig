@@ -1094,11 +1094,30 @@ fn logFirst() void {
 }
 
 inline fn logOp(e: usize) void {
-    if (cur == null) logFirst();
+    if (cur == null) {
+        @branchHint(.unlikely);
+        logFirst();
+    }
     const l = cur.?;
     l.a[l.n] = e;
     l.n += 1;
-    if (l.n >= log_cap.load(.monotonic)) boundary();
+    if (l.n >= log_cap.load(.monotonic)) {
+        @branchHint(.unlikely);
+        boundary();
+    }
+}
+
+/// Always-inline mutator API (C `always_inline` log_op / rt_gc_log_*). Export
+/// wrappers stay for the C ABI; native ops must call these so Darwin (no LTO)
+/// still inlines the log into the mutator.
+pub inline fn logInc(p: ?*anyopaque) void {
+    if (p) |q| logOp(@intFromPtr(q) | OP_INC);
+}
+pub inline fn logDec(p: ?*anyopaque) void {
+    if (p) |q| logOp(@intFromPtr(q) | OP_DEC);
+}
+pub inline fn writeBarrier(o: ?*anyopaque) void {
+    logOp(@intFromPtr(o) | OP_MOD);
 }
 
 fn boundary() void {
@@ -1125,13 +1144,13 @@ fn boundary() void {
 }
 
 pub export fn rt_gc_log_inc(p: ?*anyopaque) void {
-    if (p) |q| logOp(@intFromPtr(q) | OP_INC);
+    logInc(p);
 }
 pub export fn rt_gc_log_dec(p: ?*anyopaque) void {
-    if (p) |q| logOp(@intFromPtr(q) | OP_DEC);
+    logDec(p);
 }
 pub export fn rt_gc_write_barrier(o: ?*anyopaque) void {
-    logOp(@intFromPtr(o) | OP_MOD);
+    writeBarrier(o);
 }
 pub export fn rt_gc_root_hint(p: ?*anyopaque) void {
     logOp(@intFromPtr(p) | OP_ROOT);

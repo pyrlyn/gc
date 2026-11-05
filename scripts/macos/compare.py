@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Compare two ops-raw logs (same format as bench/ops and gc-ops).
+"""Compare C vs Zig ops-raw logs from fixed artifact locations.
 
-Each data line: `<collector> <op> <value>`
-`peak_rss_kb` is reported separately and ignored in ns/op medians.
+No filesystem path is taken from the command line (Sonar AaGuAJygRUAgjXuXSY5_).
+Copy Mac C logs into the artifact slot first if they live elsewhere:
 
-Usage:
-  python3 scripts/macos/compare.py c-ops-raw.txt zig-ops-raw.txt
-  python3 scripts/macos/compare.py --label "local Mac" c.txt zig.txt
+  mkdir -p artifacts/macos-local/c/logs
+  cp ~/Grok/gc-local-bench/c-logs/ops-raw.txt artifacts/macos-local/c/logs/
 
-Does not execute any command (no subprocess). Prints markdown + raw samples.
+Usage (from repo root):
+  python3 scripts/macos/compare.py --pair mac-local --label "local Mac"
 """
 from __future__ import annotations
 
@@ -23,9 +23,9 @@ OPS = ("rc_pair", "field_store", "alloc_drop", "lru_move", "pause_ms", "peak_rss
 GCS = ("perceus", "incremental", "epoch", "rc")
 
 
-def load(path: Path) -> dict[tuple[str, str], list[float]]:
+def load_ops_raw(text: str) -> dict[tuple[str, str], list[float]]:
     d: dict[tuple[str, str], list[float]] = collections.defaultdict(list)
-    for line in path.read_text().splitlines():
+    for line in text.splitlines():
         s = line.strip()
         if not s or s.startswith("#") or s.startswith("N=") or s.startswith("##"):
             continue
@@ -38,6 +38,22 @@ def load(path: Path) -> dict[tuple[str, str], list[float]]:
         except ValueError:
             continue
     return d
+
+
+def read_mac_local_c() -> str:
+    return Path("artifacts/macos-local/c/logs/ops-raw.txt").read_text()
+
+
+def read_mac_local_zig() -> str:
+    return Path("artifacts/macos-local/zig/logs/ops-raw.txt").read_text()
+
+
+def read_vm_c() -> str:
+    return Path("artifacts/c-baseline/logs/ops-raw.txt").read_text()
+
+
+def read_vm_zig() -> str:
+    return Path("artifacts/zig-bench/logs/ops-raw.txt").read_text()
 
 
 def med(xs: list[float]) -> float | None:
@@ -59,21 +75,37 @@ def delta(c: float | None, z: float | None) -> str:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Compare C vs Zig ops-raw logs")
-    ap.add_argument("c_raw")
-    ap.add_argument("zig_raw")
-    ap.add_argument("--label", default="unspecified host (set --label 'local Mac' only on a Mac)")
+    ap = argparse.ArgumentParser(description="Compare fixed C vs Zig ops-raw artifact pairs")
+    ap.add_argument(
+        "--pair",
+        required=True,
+        choices=("mac-local", "vm-guide"),
+        help="mac-local: artifacts/macos-local/{c,zig}/logs/ops-raw.txt; "
+        "vm-guide: frozen Linux VM artifacts (not a Mac result)",
+    )
+    ap.add_argument("--label", default="")
     args = ap.parse_args()
-    c_path = Path(args.c_raw)
-    z_path = Path(args.zig_raw)
-    c = load(c_path)
-    z = load(z_path)
-    print(f"# C vs Zig ops comparison")
+    if args.pair == "mac-local":
+        c_text = read_mac_local_c()
+        z_text = read_mac_local_zig()
+        c_name = "artifacts/macos-local/c/logs/ops-raw.txt"
+        z_name = "artifacts/macos-local/zig/logs/ops-raw.txt"
+        label = args.label or "local Mac (artifact pair)"
+    else:
+        c_text = read_vm_c()
+        z_text = read_vm_zig()
+        c_name = "artifacts/c-baseline/logs/ops-raw.txt"
+        z_name = "artifacts/zig-bench/logs/ops-raw.txt"
+        label = args.label or "Linux VM guide only (not local Mac)"
+    c = load_ops_raw(c_text)
+    z = load_ops_raw(z_text)
+    print("# C vs Zig ops comparison")
     print()
-    print(f"- host_label: {args.label}")
-    print(f"- c_raw: {c_path}")
-    print(f"- zig_raw: {z_path}")
-    print(f"- method: median of samples present in each raw file")
+    print(f"- host_label: {label}")
+    print(f"- pair: {args.pair}")
+    print(f"- c_raw: {c_name}")
+    print(f"- zig_raw: {z_name}")
+    print("- method: median of samples present in each raw file")
     print()
     print("| collector | op | C | Zig | Δ% |")
     print("|---|---|---:|---:|---:|")

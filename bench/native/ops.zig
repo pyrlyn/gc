@@ -26,8 +26,8 @@ fn objTrav(p: ?*anyopaque, f: ?kx.VisitFn) callconv(.c) void {
 }
 fn objRelo(_: ?*anyopaque) callconv(.c) void {}
 fn objRel(p: ?*anyopaque) callconv(.c) void {
-    if (gc.caps.deferred) {
-        gc.rt_gc_log_dec(p);
+    if (comptime gc.caps.deferred) {
+        gc.logDec(p);
         return;
     }
     const o: *Obj = @ptrCast(@alignCast(p orelse return));
@@ -55,8 +55,8 @@ fn objRel(p: ?*anyopaque) callconv(.c) void {
 var vt: kx.VTab = .{ .rel = objRel, .trav = objTrav, .relo = objRelo, .freemem = objFree, .cyclic = @ptrFromInt(1) };
 
 inline fn retain(p: ?*Obj) void {
-    if (gc.caps.deferred) {
-        gc.rt_gc_log_inc(p);
+    if (comptime gc.caps.deferred) {
+        gc.logInc(p);
         return;
     }
     if (p) |o| o.hdr += 1;
@@ -67,9 +67,9 @@ inline fn release(p: ?*Obj) void {
 inline fn storeNext(o: *Obj, v: ?*Obj) void {
     retain(v);
     const old = o.next;
-    if (gc.caps.deferred) {
+    if (comptime gc.caps.deferred) {
         @atomicStore(?*Obj, &o.next, v, .release);
-        gc.rt_gc_write_barrier(o);
+        gc.writeBarrier(o);
     } else {
         o.next = v;
     }
@@ -78,9 +78,9 @@ inline fn storeNext(o: *Obj, v: ?*Obj) void {
 inline fn storePrev(o: *Obj, v: ?*Obj) void {
     retain(v);
     const old = o.prev;
-    if (gc.caps.deferred) {
+    if (comptime gc.caps.deferred) {
         @atomicStore(?*Obj, &o.prev, v, .release);
-        gc.rt_gc_write_barrier(o);
+        gc.writeBarrier(o);
     } else {
         o.prev = v;
     }

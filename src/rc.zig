@@ -47,16 +47,25 @@ pub export fn rt_gc_stats(out: *kx.Stats) void {
     out.* = .{};
 }
 
-pub export fn rt_gc_log_inc(p: ?*anyopaque) void {
+pub inline fn logInc(p: ?*anyopaque) void {
     _ = p;
     host.rt_panic("rt_gc_log_inc without deferred RC");
 }
-pub export fn rt_gc_log_dec(p: ?*anyopaque) void {
+pub inline fn logDec(p: ?*anyopaque) void {
     _ = p;
     host.rt_panic("rt_gc_log_dec without deferred RC");
 }
-pub export fn rt_gc_write_barrier(o: ?*anyopaque) void {
+pub inline fn writeBarrier(o: ?*anyopaque) void {
     _ = o;
+}
+pub export fn rt_gc_log_inc(p: ?*anyopaque) void {
+    logInc(p);
+}
+pub export fn rt_gc_log_dec(p: ?*anyopaque) void {
+    logDec(p);
+}
+pub export fn rt_gc_write_barrier(o: ?*anyopaque) void {
+    writeBarrier(o);
 }
 pub export fn rt_gc_root_hint(p: ?*anyopaque) void {
     const o = p orelse return;

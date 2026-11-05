@@ -11,7 +11,7 @@ LOG="$(cd "$(dirname "$0")" && pwd)/logs"
 mkdir -p "$LOG"
 cd "$ROOT"
 zig version | tee "$LOG/zig-version.txt"
-echo "optimize=--release=fast lto=full" | tee -a "$LOG/zig-version.txt"
+echo "optimize=--release=fast lto=full-on-elf-none-on-macho" | tee -a "$LOG/zig-version.txt"
 if [ -r /proc/loadavg ]; then
   echo "load=$(cat /proc/loadavg) date=$(date -u +%Y-%m-%dT%H:%M:%SZ) uname=$(uname -s) host=vm-or-local-see-uname" | tee "$LOG/environment.txt"
 else

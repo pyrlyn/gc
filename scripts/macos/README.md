@@ -30,11 +30,17 @@ This host stub is not a collector edit.
 # 4. Zig 0.17.1 optimized ops (same N / interleaving as C)
 ./scripts/macos/zig-bench.sh
 
-# 5. Raw-format comparison (C vs Zig from this Mac only)
-python3 scripts/macos/compare.py \
-  artifacts/macos-local/c/logs/ops-raw.txt \
-  artifacts/macos-local/zig/logs/ops-raw.txt
+# 5. If C logs are already at ~/Grok/gc-local-bench/c-logs/, copy into the slot:
+mkdir -p artifacts/macos-local/c/logs
+cp ~/Grok/gc-local-bench/c-logs/ops-raw.txt artifacts/macos-local/c/logs/
+
+# 6. Raw-format comparison (fixed artifact paths only; no CLI file paths)
+python3 scripts/macos/compare.py --pair mac-local --label "local Mac"
 ```
+
+`zig build --release=fast` must succeed on this Mac. Zig 0.17.1 cannot LTO Mach-O
+(self-hosted linker, "LTO requires using LLD"). `build.zig` keeps ReleaseFast on
+Darwin and enables full LTO only for ELF/COFF. Do not use mise 0.17.0.
 
 Outputs go to `artifacts/macos-local/` (not the frozen Linux VM baseline).
 

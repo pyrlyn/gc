@@ -44,11 +44,11 @@ export PATH="$PWD/.zig-0.17.1:$PATH"
 ./scripts/macos/c-baseline.sh
 ./scripts/macos/zig-regression.sh
 ./scripts/macos/zig-bench.sh
-python3 scripts/macos/compare.py \
-  --label "local Mac" \
-  artifacts/macos-local/c/logs/ops-raw.txt \
-  artifacts/macos-local/zig/logs/ops-raw.txt
+python3 scripts/macos/compare.py --pair mac-local --label "local Mac"
 ```
+
+Zig 0.17.1 has no LLVM LTO on Mach-O. Official `zig build --release=fast` uses
+ReleaseFast everywhere and full LTO only when the object format is ELF/COFF.
 
 A Mac runner already recorded C medians (see
 `artifacts/macos-local/c-reported/`). Zig has **not** been timed on that Mac

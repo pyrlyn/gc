@@ -20,7 +20,8 @@ zig version | tee "$LOG/zig-version.txt"
   echo "uname=$(uname -a)"
   echo "hw=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown)"
   echo "ncpu=$(sysctl -n hw.ncpu)"
-  echo "optimize=--release=fast lto=full"
+  echo "optimize=--release=fast"
+  echo "lto=none-on-macho (Zig 0.17.1 self-hosted Mach-O linker has no LLVM LTO; ELF still uses -flto=full)"
 } | tee "$LOG/environment.txt"
 
 zig build --release=fast
@@ -51,4 +52,5 @@ N=4000000
 } | tee "$LOG/ops-size-sweep.txt"
 
 echo "macOS Zig ops complete. Logs in $LOG"
-echo "Compare with: python3 scripts/macos/compare.py artifacts/macos-local/c/logs/ops-raw.txt artifacts/macos-local/zig/logs/ops-raw.txt"
+echo "If C ops-raw lives at ~/Grok/gc-local-bench/c-logs/ops-raw.txt, copy it to artifacts/macos-local/c/logs/ first."
+echo "Compare with: python3 scripts/macos/compare.py --pair mac-local --label \"local Mac\""
