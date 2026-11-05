@@ -22,9 +22,10 @@ pub inline fn header(obj: *anyopaque) *u64 {
 }
 
 pub inline fn vtab(obj: *anyopaque) *VTab {
+    // C object.inc: `*(VTab **)((char *)obj + VTAB_OFFSET)` — no null check.
     const p: [*]u8 = @ptrCast(obj);
-    const slot: *?*VTab = @ptrCast(@alignCast(p + VTAB_OFFSET));
-    return slot.*.?;
+    const slot: **VTab = @ptrCast(@alignCast(p + VTAB_OFFSET));
+    return slot.*;
 }
 
 pub inline fn isCyclic(obj: *anyopaque) bool {

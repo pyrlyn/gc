@@ -56,11 +56,11 @@ pub fn rtFree(p: ?*anyopaque, size: i64) void {
     host.free(p);
 }
 
-pub fn rtAllocTrace(size: i64) *anyopaque {
+pub inline fn rtAllocTrace(size: i64) *anyopaque {
     return trace_pool.alloc(size);
 }
 
-pub fn rtFreeTrace(p: ?*anyopaque, size: i64) void {
+pub inline fn rtFreeTrace(p: ?*anyopaque, size: i64) void {
     if (p) |q| trace_pool.free(q, size);
 }
 

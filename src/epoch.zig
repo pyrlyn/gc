@@ -144,7 +144,7 @@ fn pageAlloc(bytes: usize) *anyopaque {
     return p;
 }
 
-fn slabOf(p: *anyopaque) ?*Slab {
+inline fn slabOf(p: *anyopaque) ?*Slab {
     const pg = @intFromPtr(p) >> PAGE_SHIFT;
     const d = slab_dir[pg >> 16] orelse return null;
     return d[pg & 0xffff];
@@ -210,7 +210,7 @@ noinline fn slabRefill(cls: usize) *anyopaque {
 }
 
 inline fn slabAlloc(cls: usize) *anyopaque {
-    // C slab_alloc: likely current slab, then free-list / bump, else out-of-line refill.
+    // C slab_alloc: likely current slab, free-list then bump, else noinline refill.
     const s = slab_cur[cls];
     if (s != null) {
         @branchHint(.likely);
@@ -221,9 +221,10 @@ inline fn slabAlloc(cls: usize) *anyopaque {
             slab.live += 1;
             return free_cell;
         }
-        if (@intFromPtr(slab.bump) + (cls << 3) <= @intFromPtr(slab.base) + PAGE) {
+        const next_bump = slab.bump + (cls << 3);
+        if (@intFromPtr(next_bump) <= @intFromPtr(slab.base) + PAGE) {
             const p: *anyopaque = @ptrCast(slab.bump);
-            slab.bump += cls << 3;
+            slab.bump = next_bump;
             slab.live += 1;
             return p;
         }
@@ -231,8 +232,9 @@ inline fn slabAlloc(cls: usize) *anyopaque {
     return slabRefill(cls);
 }
 
-fn slabFree(p: *anyopaque, cls: usize) void {
-    const s = slabOf(p) orelse return;
+inline fn slabFree(p: *anyopaque, cls: usize) void {
+    // C slab_free does not null-check slab_of: a traced cell always has a slab.
+    const s = slabOf(p).?;
     const next: *?*anyopaque = @ptrCast(@alignCast(p));
     next.* = s.free;
     s.free = p;
@@ -327,43 +329,27 @@ pub export fn rt_gc_mem_free(p: ?*anyopaque) void {
 }
 
 var big_madvise: i32 = -1;
-fn bigRelease(p: *anyopaque, bytes: usize) void {
-    if (big_madvise < 0) {
-        const e = std.c.getenv("KX_GC_MADVISE");
-        big_madvise = if (e != null and e.?[0] == '0') 0 else 1;
+noinline fn allocBig(size: i64) *anyopaque {
+    const bytes = (@as(usize, @intCast(size)) + PAGE - 1) & ~@as(usize, PAGE - 1);
+    var b = big_free;
+    var prev: *?*Big = &big_free;
+    while (b) |blk| {
+        if (blk.size == bytes) {
+            prev.* = blk.next;
+            return @ptrCast(blk);
+        }
+        prev = &blk.next;
+        b = blk.next;
     }
-    if (big_madvise == 0) return;
-    const os_page = std.heap.pageSize();
-    if (bytes < 2 * os_page) return;
-    const from: [*]u8 = @ptrCast(p);
-    madv(@ptrCast(from + os_page), bytes - os_page);
+    return pageAlloc(bytes);
 }
 
-pub inline fn allocTrace(size: i64) ?*anyopaque {
-    // C: relaxed load+store of a debug counter, not an RMW.
-    t_allocs.store(t_allocs.load(.monotonic) + 1, .monotonic);
-    freePaced();
-    const cls = (@as(usize, @intCast(size)) + 7) >> 3;
-    if (cls > CLASSES) {
-        const bytes = (@as(usize, @intCast(size)) + PAGE - 1) & ~@as(usize, PAGE - 1);
-        var b = big_free;
-        var prev: *?*Big = &big_free;
-        while (b) |blk| {
-            if (blk.size == bytes) {
-                prev.* = blk.next;
-                return @ptrCast(blk);
-            }
-            prev = &blk.next;
-            b = blk.next;
-        }
-        return pageAlloc(bytes);
-    }
-    if (slab_release < 0) {
-        @branchHint(.unlikely);
-        const e = std.c.getenv("KX_GC_SLAB_RELEASE");
-        slab_release = if (e != null and e.?[0] == '0') 0 else 1;
-    }
-    if (slab_release != 0) return slabAlloc(cls);
+noinline fn initSlabRelease() void {
+    const e = std.c.getenv("KX_GC_SLAB_RELEASE");
+    slab_release = if (e != null and e.?[0] == '0') 0 else 1;
+}
+
+noinline fn allocNoSlab(cls: usize) *anyopaque {
     if (free_list[cls]) |p| {
         const next: *?*anyopaque = @ptrCast(@alignCast(p));
         free_list[cls] = next.*;
@@ -380,11 +366,41 @@ pub inline fn allocTrace(size: i64) ?*anyopaque {
     return p;
 }
 
+fn bigRelease(p: *anyopaque, bytes: usize) void {
+    if (big_madvise < 0) {
+        const e = std.c.getenv("KX_GC_MADVISE");
+        big_madvise = if (e != null and e.?[0] == '0') 0 else 1;
+    }
+    if (big_madvise == 0) return;
+    const os_page = std.heap.pageSize();
+    if (bytes < 2 * os_page) return;
+    const from: [*]u8 = @ptrCast(p);
+    madv(@ptrCast(from + os_page), bytes - os_page);
+}
+
+pub inline fn allocTrace(size: i64) ?*anyopaque {
+    // Keep this body tiny so Darwin no-LTO inlines it into newObj / op_alloc
+    // the way C -flto inlines rt_alloc_trace → slab_alloc. Cold paths are noinline.
+    t_allocs.store(t_allocs.load(.monotonic) + 1, .monotonic);
+    if (ret_pos < ret_local.len) freePaced();
+    const cls = (@as(usize, @intCast(size)) + 7) >> 3;
+    if (cls > CLASSES) {
+        @branchHint(.unlikely);
+        return allocBig(size);
+    }
+    if (slab_release < 0) {
+        @branchHint(.unlikely);
+        initSlabRelease();
+    }
+    if (slab_release != 0) return slabAlloc(cls);
+    return allocNoSlab(cls);
+}
+
 pub export fn rt_alloc_trace(size: i64) ?*anyopaque {
     return allocTrace(size);
 }
 
-pub export fn rt_free_trace(p: ?*anyopaque, size: i64) void {
+pub inline fn freeTrace(p: ?*anyopaque, size: i64) void {
     t_frees.store(t_frees.load(.monotonic) + 1, .monotonic);
     const q = p orelse return;
     const cls = (@as(usize, @intCast(size)) + 7) >> 3;
@@ -404,6 +420,10 @@ pub export fn rt_free_trace(p: ?*anyopaque, size: i64) void {
     const next: *?*anyopaque = @ptrCast(@alignCast(q));
     next.* = free_list[cls];
     free_list[cls] = q;
+}
+
+pub export fn rt_free_trace(p: ?*anyopaque, size: i64) void {
+    freeTrace(p, size);
 }
 
 pub export fn rt_cc_possible_root(p: ?*anyopaque) void {
@@ -1063,13 +1083,15 @@ fn mutReleaseChild(t: ?*anyopaque) callconv(.c) void {
 }
 
 fn freeReturned(p: *anyopaque) void {
+    // C free_returned: one vtab load, unconditional trav/relo/freemem calls.
+    const vt = obj.vtab(p);
     host.rt_trav_mode = kx.TRAV_FREE;
-    if (obj.vtab(p).trav) |trav| trav(p, mutReleaseChild);
+    vt.trav.?(p, mutReleaseChild);
     host.rt_trav_mode = kx.TRAV_SCAN;
     host.rt_relo_owner = 0;
-    if (obj.vtab(p).relo) |relo| relo(p);
+    vt.relo.?(p);
     if (host.rt_relo_owner == 0) {
-        if (obj.vtab(p).freemem) |f| f(p);
+        vt.freemem.?(p);
     }
 }
 
@@ -1082,7 +1104,9 @@ fn processReturns() void {
     ret_pos = 0;
 }
 
-inline fn freePaced() void {
+// C free_returned stays out of line. Inlining the paced loop into allocTrace
+// made newObj too fat for op_alloc (no-LTO `call newObj` every iteration).
+noinline fn freePaced() void {
     if (ret_pos >= ret_local.len) return;
     const back = ret_local.len - ret_pos;
     var k: usize = if (back > 65536) 16 else if (back > 16384) 8 else if (back > 4096) 4 else 2;

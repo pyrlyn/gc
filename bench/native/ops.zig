@@ -17,7 +17,9 @@ var head: ?*Obj = null;
 var tail: ?*Obj = null;
 
 fn objFree(p: ?*anyopaque) callconv(.c) void {
-    gc.rt_free_trace(p, @sizeOf(Obj));
+    // Inline freeTrace (not the export) so Darwin no-LTO matches C LTO of
+    // `obj_free` → `rt_free_trace` → `slab_free`.
+    gc.freeTrace(p, @sizeOf(Obj));
 }
 fn objTrav(p: ?*anyopaque, f: ?kx.VisitFn) callconv(.c) void {
     const o: *Obj = @ptrCast(@alignCast(p));
@@ -93,9 +95,15 @@ inline fn storePrev(o: *Obj, v: ?*Obj) void {
     release(old);
 }
 
-fn newObj(v: i64) *Obj {
+inline fn newObj(v: i64) *Obj {
+    // C new_obj: field stores, no struct-wide write. allocTrace never returns
+    // null (OOM panics), matching `Obj *o = rt_alloc_trace(sizeof(Obj))`.
     const o: *Obj = @ptrCast(@alignCast(gc.allocTrace(@sizeOf(Obj)).?));
-    o.* = .{ .hdr = 1, .vt = &vt, .prev = null, .next = null, .val = v };
+    o.hdr = 1;
+    o.vt = &vt;
+    o.prev = null;
+    o.next = null;
+    o.val = v;
     return o;
 }
 

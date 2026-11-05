@@ -90,7 +90,8 @@ Paired Mac numbers for SHA `31bdbcf` live on the runner at
 ## Verdict
 
 **NOT READY.** Native tests pass on Zig 0.17.1 (Debug and ReleaseFast, 4/4).
-Mac SHA `31bdbcf` official scripts worked; perceus/incremental/rc ops were at
-or under C, but epoch `field_store` was still +26–29% at 100k/1M/4M (codegen,
-not LTO-only). Full collector parity is still incomplete. Linux VM timings are
-not Mac-to-Mac. Do not update C baselines.
+Mac SHA `19d8182` official scripts passed; epoch `field_store` closed to +1.4%.
+Remaining Mac bottleneck is epoch `alloc_drop` (C 13.07 vs Zig 15.24 ns, +16.6%
+at N=4M). This SHA thins `allocTrace`/`freeTrace`/`slab_*` so Darwin no-LTO
+matches C’s inlined alloc/drop protocol. Full collector parity is still
+incomplete. Linux VM timings are not Mac-to-Mac. Do not update C baselines.

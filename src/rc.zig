@@ -19,8 +19,11 @@ pub inline fn allocTrace(size: i64) ?*anyopaque {
 pub export fn rt_alloc_trace(size: i64) ?*anyopaque {
     return allocTrace(size);
 }
-pub export fn rt_free_trace(p: ?*anyopaque, size: i64) void {
+pub inline fn freeTrace(p: ?*anyopaque, size: i64) void {
     regions.rtFreeTrace(p, size);
+}
+pub export fn rt_free_trace(p: ?*anyopaque, size: i64) void {
+    freeTrace(p, size);
 }
 pub export fn rt_gc_mem_alloc(n: usize) ?*anyopaque {
     return regions.memAlloc(n);
