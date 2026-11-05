@@ -15,7 +15,7 @@ Zig 0.17 std + libc only (no new dependencies). The programs are the ones the sh
 ## Running
 
 ```sh
-mise install                     # repo root: bdwgc for --gc=boehm, pinned opt
+mise install                     # repo root (pinned opt) and bench/gc/third_party/boehm (bdwgc; --gc=boehm via ../gcdir.sh)
 cd bench/gc/zig
 zig build test                   # all categories, median of 5 runs
 zig build test -Donly=cyclic_garbage,wide_graph_churn -Druns=9

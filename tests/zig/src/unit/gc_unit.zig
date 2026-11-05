@@ -134,7 +134,7 @@ export fn main(argc: c_int, argv: [*]const [*:0]const u8) c_int {
         check(during.collections == before.collections, @src(), "during.collections == before.collections");
         for (0..N) |i| {
             objRel(objs[i]);
-            objs[i] = null; // bdwgc would scan a dangling pointer
+            objs[i] = null; // never leave a dangling pointer
         }
         c.rt_gc_collect();
         // stress: many self cycles

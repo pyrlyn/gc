@@ -66,7 +66,7 @@ Only two cases leave generated code:
    now-unreachable cycle, so generated code colors it PURPLE and, unless already buffered, calls
    `rt_cc_possible_root`.
 
-An implementation that never sets the buffered bit gets plain RC (`rc`, `boehm`).
+An implementation that never sets the buffered bit gets plain RC (`rc`).
 
 Releasing a field can free its object, so `@relz.C` frames nest once per node of a chain. `@relz.C` compares
 the stack pointer with `rt_rel_limit` (4 MiB below the start of the program, or half the stack limit if that
@@ -76,7 +76,7 @@ the runtime's pending stack before it returns, with the limit moved below its ow
 room, so the C stack stays bounded and no pending object outlives that call. Because a parent can now be freed before a
 deferred child, and a buffered child at count zero looks dead to `mark_roots` once it is black, `default` and
 `incremental` start no collection while `rt_rel_draining` is set; the roots buffered meanwhile trigger one
-at the next possible root. bdwgc cannot run in that window either, since nothing there allocates from it.
+at the next possible root.
 
 ## 4. Regions
 
@@ -96,7 +96,7 @@ wrong region abort, and any collector visit outside the tracing region fails the
 Implementation: [`common/regions.inc`](../common/regions.inc).
 
 Runtime containers that store references (ArrayList storage, HashMap values, arrays) are allocated with
-`rt_gc_mem_*`, so a tracing collector (bdwgc) can scan them.
+`rt_gc_mem_*`, so a tracing collector can scan them.
 
 ## 5. Cycle collector (default)
 
@@ -252,20 +252,12 @@ Traced objects use 64 KiB-aligned size-class slabs registered in a page bitmap (
 dereferencing them (acyclic objects may be freed concurrently). The unit test `gc_unit.c`
 (immediate-RC protocol) is skipped for `deferred` implementations.
 
-## 8. bdwgc backend
-
-`boehm` keeps RC (objects are freed with `GC_FREE` at count zero) and lets bdwgc reclaim unreachable
-cycles. Acyclic objects and `rt_gc_mem_*` storage are uncollectable but scanned; traced objects are
-collectable with a finalizer that releases their acyclic fields. Pauses are measured through bdwgc's
-collection event callback.
-
-## 9. Statistics and environment
+## 8. Statistics and environment
 
 | variable | effect |
 |---|---|
 | `NEWKOTLIN_GC` | compile time: default for `--gc` |
 | `NEWKOTLIN_GC_DIR` | compile time: directory with implementations (default `<runtime>/../gc`) |
-| `NEWKOTLIN_BDWGC_DIR` | compile time: bdwgc install prefix for `--gc=boehm` |
 | `KX_GC_STATS=1` | run time: print `gc-stats: gc=... collections=... reclaimed=... pause_total=... pause_max=...` (ms) at exit |
 | `KX_GC_BUDGET_US` | run time, `incremental` only: per-step budget in microseconds (default 500) |
 | `KX_GC_FREE_BUDGET_US` | run time, `epoch` only: time per epoch boundary for freeing returned objects (default half of `KX_GC_TARGET_PAUSE_US`: 1500) |
@@ -275,7 +267,7 @@ collection event callback.
 | `KX_GC_EXIT_DRAIN=1` | run time, `epoch` only: drain the queue at exit even without `--leak-check` / `--alloc malloc` |
 | `KX_GC_DEBUG=1` | run time, `epoch` only: print epoch/detection/validation counters at each full collection |
 
-## 10. Adding an implementation
+## 9. Adding an implementation
 
 1. Create `compiler/gc/<name>/gc.c` implementing every function of `kxgc.h`. RC implementations include
    `common/regions.inc`; cycle collectors add `common/object.inc` and `common/trial_deletion.inc`.
@@ -285,7 +277,7 @@ collection event callback.
 3. If it needs extra clang flags, add an executable `config.sh` that prints them.
 4. Run `compiler/gc/tests/run.sh` (picks it up automatically) and the benchmarks below.
 
-## 11. Testing and benchmarking
+## 10. Testing and benchmarking
 
 - `compiler/test.sh`: everything, including leak tests and `compiler/gc/tests/run.sh`.
 - `GCS="default incremental" compiler/gc/tests/run.sh`: GC unit tests (-O1/-O3), Kotlin tests, leak-check

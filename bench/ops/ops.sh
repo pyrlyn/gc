@@ -4,10 +4,11 @@
 set -eu
 cd "$(dirname "$0")"; C=../../../compiler; out=${OUT:-$C/build/gc-ops}; mkdir -p "$out"
 cc=${NK_CC:-clang}; gcs=${*:-epoch perceus boehm}
+G=$(sh ../gcdir.sh)  # compiler/gc collectors + bench/gc/third_party/boehm (benchmarks only)
 for g in $gcs; do
-  extra=""; [ -f "$C/gc/$g/config.sh" ] && extra=$(bash "$C/gc/$g/config.sh")
-  grep -qw deferred "$C/gc/$g/caps" && extra="$extra -DDEFERRED"
-  eval "$cc" -O3 -flto -I"$C/gc" $extra ops.c "$C/runtime/runtime.c" "$C/gc/$g/gc.c" -o "$out/ops.$g" -lpthread
+  extra=""; [ -f "$G/$g/config.sh" ] && extra=$(bash "$G/$g/config.sh")
+  grep -qw deferred "$G/$g/caps" && extra="$extra -DDEFERRED"
+  eval "$cc" -O3 -flto -I"$C/gc" $extra ops.c "$C/runtime/runtime.c" "$G/$g/gc.c" -o "$out/ops.$g" -lpthread
 done
 echo "# load: $(sysctl -n vm.loadavg 2>/dev/null || cat /proc/loadavg)"
 for r in $(seq ${ROUNDS:-5}); do for g in $gcs; do "$out/ops.$g" ${N:-4000000} ${OP:-} | sed "s/^[^ ]*/$g/"; done; done | python3 -c '

@@ -68,9 +68,7 @@ exactly as `run.sh` does. Scratch files go to `compiler/build/gc-zig-tmp-<pid>`,
 `compare.sh` masks only timing-dependent values that each suite asserts bounds on itself
 (`paced=`/`boundary=`, `qmax=`/`logs=`, `madvised=`, pause times); everything else, including exit codes,
 must match byte for byte. For the unit programs' final stats line (which `run.sh` does not check) it also
-masks incremental's collection count (time-budgeted slices; varies between runs of the C binary itself) and
-reports Boehm's as KNOWN: a conservative scan of the test's own stack reclaims 199998 of the 200002 self
-cycles in the Zig port vs 200002 in C (both pass the `>= 190000` assertion).
+masks incremental's collection count (time-budgeted slices; varies between runs of the C binary itself).
 
 ## Coverage
 

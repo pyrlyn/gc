@@ -31,9 +31,7 @@ obj="$here/zig-out/obj"
 gcs=${GCS:-$(for d in compiler/gc/*/gc.c; do basename "$(dirname "$d")"; done)}
 # Per-collector extra masks for the unit programs' final stats line (not printed by run.sh, which only checks
 # the exit code): incremental's collection count depends on its time budget (KX_GC_BUDGET_US slices; the C
-# binary alone varies run to run). Boehm scans the test's own stack conservatively, so how many of the 200000
-# self cycles it reclaims depends on the test's stack layout (C 200002 vs Zig 199998; both pass the
-# >= 190000 assertion): reported as KNOWN, not masked silently.
+# binary alone varies run to run).
 unit_mask() { case "$1" in *incremental*) echo 's/collections=[0-9]+/collections=N/';; *) echo 's/^$//';; esac; }
 cmpbin() { # name, C binary, Zig binary, env, args for C, args for Zig
   local n=$1 cb=$2 zb=$3 e=$4 ca=$5 za=$6 m; m=$(unit_mask "$n")
@@ -42,8 +40,6 @@ cmpbin() { # name, C binary, Zig binary, env, args for C, args for Zig
   # Line numbers in a failure message differ by file; none are printed on success.
   if diff <(sed -E "$MASK;$m" "$OUT/$n.c.out") <(sed -E "$MASK;$m" "$OUT/$n.zig.out") >"$OUT/$n.diff"; then
     echo "IDENTICAL $n: $(tr '\n' ' ' <"$OUT/$n.zig.out")"
-  elif [[ $n == gc_unit-boehm* ]] && diff <(grep -v '^collections=' "$OUT/$n.c.out") <(grep -v '^collections=' "$OUT/$n.zig.out") >/dev/null; then
-    echo "KNOWN $n (conservative stack scan; everything but the stats line identical):"; cat "$OUT/$n.diff"
   else echo "DIFFERENT $n"; cat "$OUT/$n.diff"; fail=1; fi
 }
 for g in $gcs; do

@@ -243,10 +243,10 @@ pub fn numAfter(s: []const u8, key: []const u8) ?i64 {
 }
 
 test "words handles config.sh quoting" {
-    const w = words("-I'/a b/include' -L'/x' -lgc");
+    const w = words("-I'/a b/include' -L'/x' -lfoo");
     try std.testing.expectEqual(@as(usize, 3), w.len);
     try std.testing.expectEqualStrings("-I/a b/include", w[0]);
-    try std.testing.expectEqualStrings("-lgc", w[2]);
+    try std.testing.expectEqualStrings("-lfoo", w[2]);
 }
 test "numAfter" {
     try std.testing.expectEqual(@as(?i64, 12), numAfter("x qmax=12 y", "qmax="));

@@ -356,7 +356,7 @@ static size_t max_queued;
 /* Effective log capacity (entries before a hand-off). Everything the collector has not yet confirmed dead
  * waits for a few logs (the one being filled, the queue, the one being applied, the one a candidate set's
  * Delta test waits for), so peak garbage in flight is a small multiple of the log size: with 32K-entry logs
- * that was ~350K unfreed cyclic objects (23 MiB peak RSS on cyclic_garbage vs 3.4 for Boehm). The log
+ * that was ~350K unfreed cyclic objects (23 MiB peak RSS on cyclic_garbage vs a 3.4 MiB target). The log
  * capacity therefore follows the detection threshold: LOG_MIN while detections keep finding garbage (the
  * threshold stays at its minimum), growing with it (LOG_PER_ROOT entries per threshold root, up to LOG_CAP)
  * when detections mostly retrace live data and the per-log overhead would dominate. KX_GC_LOG_CAP fixes it. */

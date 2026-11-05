@@ -41,7 +41,6 @@ linked into every program.
 | `incremental` | [`incremental/gc.c`](incremental/gc.c) | collected | `perceus` with the root buffer processed in slices of 64 under a per-step time budget (`KX_GC_BUDGET_US`, default 500 us); falls back to one pass when a single slice already exceeds the budget. |
 | `epoch` | [`epoch/gc.c`](epoch/gc.c) | collected | **Default** (also `--gc=default`). Deferred RC for possibly cyclic objects: the program logs reference operations per epoch, a background thread applies them and runs concurrent cycle detection with Delta/Sigma validation. See [`docs/architecture.md`](docs/architecture.md#7-epoch-collector-deferred-rc-background-cycle-collection). |
 | `rc` | [`rc/gc.c`](rc/gc.c) | leak | Same RC and regions, no cycle collector. Baseline for the collector's cost. |
-| `boehm` | [`boehm/gc.c`](boehm/gc.c) | collected | RC + [bdwgc](https://github.com/bdwgc/bdwgc) 8.2.12 (conservative mark-sweep) for unreachable cycles. bdwgc is installed by `mise install` (`conda:bdw-gc` in `mise.toml`). |
 
 Full description (object layout, RC + Perceus, regions, cycle collector, ownership rules):
 [`docs/architecture.md`](docs/architecture.md).
@@ -64,7 +63,6 @@ Full description (object layout, RC + Perceus, regions, cycle collector, ownersh
 |---|---|---|
 | `NEWKOTLIN_GC` | compile | default for `--gc` (unset: `epoch`) |
 | `NEWKOTLIN_GC_DIR` | compile | directory with implementations |
-| `NEWKOTLIN_BDWGC_DIR` | compile | bdwgc prefix for `--gc=boehm` |
 | `KX_GC_STATS=1` | run | print GC statistics to stderr at exit |
 | `KX_GC_BUDGET_US` | run | per-step budget of `incremental` (default 500) |
 | `KX_GC_FREE_BUDGET_US` | run | `epoch`: freeing budget per epoch boundary (default half of `KX_GC_TARGET_PAUSE_US`, i.e. 1500) |
@@ -75,7 +73,7 @@ Full description (object layout, RC + Perceus, regions, cycle collector, ownersh
 ## Selecting an implementation
 
 ```sh
-bin/newkotlinc --gc=boehm Main.kt -o main      # or: --gc boehm
+bin/newkotlinc --gc=perceus Main.kt -o main    # or: --gc perceus
 NEWKOTLIN_GC=rc bin/newkotlinc Main.kt -o main  # default when --gc is absent
 bin/newkotlinc Main.kt -o main                 # epoch (no --gc, no NEWKOTLIN_GC)
 bin/newkotlinc --gc=perceus Main.kt -o main    # the pre-epoch default collector
@@ -113,7 +111,7 @@ extra clang flags, a `config.sh` that prints them. `compiler/gc/tests/run.sh` pi
 interface (`tests/unit/gc_unit.c`, -O1 and -O3) and the GC-agnostic Kotlin tests in `tests/kt`
 (output; plus zero live objects with `--leak-check` for `precise` and an ASan build for `asan`).
 Tests marked `// gc-needs: cycles` are skipped for implementations that do not reclaim cycles.
-`GCS="perceus boehm" compiler/gc/tests/run.sh` limits the set.
+`GCS="perceus rc" compiler/gc/tests/run.sh` limits the set.
 
 **All new GC tests are written in Zig** in [`tests/zig`](tests/zig/README.md): a 1:1 port of `run.sh`
 (`zig build ported`, verified against it by `compare.sh`), new unit tests of the C interface

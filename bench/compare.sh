@@ -6,6 +6,8 @@
 set -eu
 cd "$(dirname "$0")/.."
 gcs=${*:-epoch boehm perceus}
+# Boehm comes from bench/gc/third_party/boehm (benchmarks only): see gcdir.sh.
+export NEWKOTLIN_GC_DIR="${NEWKOTLIN_GC_DIR:-$(sh gc/gcdir.sh)}"
 rounds=${ROUNDS:-3}
 mkdir -p results/gc; args=""
 # Interleaved: ROUNDS rounds (default 3), each running every GC once, in rotated order, so drift in

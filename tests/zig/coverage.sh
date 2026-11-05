@@ -20,7 +20,7 @@ cat "$cov/suite.out"
 $PROFDATA merge -sparse "$cov"/raw/*.profraw -o "$cov/gc.profdata" || exit 1
 objs=""; first=""
 for b in $(cat "$cov/binaries.txt"); do if [ -z "$first" ]; then first=$b; else objs="$objs -object $b"; fi; done
-srcs="$root/compiler/gc/boehm/gc.c $root/compiler/gc/perceus/gc.c $root/compiler/gc/epoch/gc.c $root/compiler/gc/incremental/gc.c $root/compiler/gc/rc/gc.c $root/compiler/gc/common/object.inc $root/compiler/gc/common/regions.inc $root/compiler/gc/common/trial_deletion.inc"
+srcs="$root/compiler/gc/perceus/gc.c $root/compiler/gc/epoch/gc.c $root/compiler/gc/incremental/gc.c $root/compiler/gc/rc/gc.c $root/compiler/gc/common/object.inc $root/compiler/gc/common/regions.inc $root/compiler/gc/common/trial_deletion.inc"
 $LLVMCOV report "$first" $objs -instr-profile="$cov/gc.profdata" -show-branch-summary $srcs 2>/dev/null | sed "s|$root/||" >"$cov/summary.txt"
 $LLVMCOV show "$first" $objs -instr-profile="$cov/gc.profdata" -format=html -show-branches=count -output-dir="$cov/html" $srcs 2>/dev/null
 $LLVMCOV export "$first" $objs -instr-profile="$cov/gc.profdata" -format=lcov $srcs 2>/dev/null \

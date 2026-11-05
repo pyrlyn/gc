@@ -68,7 +68,7 @@ int main(void) {
       for (int i = 0; i < N; i++) obj_rel(objs[i]);
       rt_rel_draining = 0;
       rt_gc_stats(&during); CHECK(during.collections == before.collections);
-      for (int i = 0; i < N; i++) { obj_rel(objs[i]); objs[i] = NULL; } /* bdwgc would scan a dangling pointer */
+      for (int i = 0; i < N; i++) { obj_rel(objs[i]); objs[i] = NULL; } /* never leave a dangling pointer */
       rt_gc_collect(); }
 #endif
     /* stress: many self cycles */

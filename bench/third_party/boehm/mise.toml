@@ -1,0 +1,3 @@
+[tools]
+# bdwgc (Boehm GC) for the benchmark-only --gc=boehm baseline (bench/gc/gcdir.sh).
+"conda:bdw-gc" = "8.2.12"

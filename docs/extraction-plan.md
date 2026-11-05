@@ -10,7 +10,7 @@
 |---|---|---|
 | `compiler/gc/kxgc.h` | public API header (the only contract with the compiler) | C |
 | `compiler/gc/common/object.inc`, `regions.inc`, `trial_deletion.inc` | shared internals: object header/colors, RC + tracing regions, trial-deletion cycle collector | C |
-| `compiler/gc/{default,incremental,epoch,rc,boehm}/gc.c` + `caps` / `config.sh` | one directory per collector | C |
+| `compiler/gc/{default,incremental,epoch,rc}/gc.c` + `caps` / `config.sh` | one directory per collector | C |
 | `compiler/gc/tests/unit/*.c` | C unit tests (being ported to Zig, see below) | C -> Zig |
 | `compiler/gc/tests/kt/*`, `tests/epoch/*`, `tests/incremental/*` | Kotlin-level GC tests (need `newkotlinc`, see "Tests") | Kotlin |
 | `bench/gc/` (`compare.sh`, `micro.sh`, `micro/*.kt`) and `bench/gc/zig` (PR #155) | GC benchmarks and Zig regression benchmarks with baselines | sh / Kotlin / Zig |
@@ -45,7 +45,6 @@ projects together (see "Versioning").
 - **Link / locate:** KotlinX finds the GC sources through `NEWKOTLIN_GC_DIR` (already supported;
   default `<runtime dir>/../gc`). After the move the default will point at the pinned checkout of the
   GC project (git submodule or a fetched source tree; to be decided when the move happens).
-  `NEWKOTLIN_BDWGC_DIR` keeps working for `--gc=boehm`.
 - **Select:** unchanged: `--gc=<name>` / `--gc <name>` or `NEWKOTLIN_GC`.
 - **Tests:** the GC project runs its Zig suite (`zig build test`, C collectors linked through
   `@cImport`) and the Zig benchmarks on its own. Kotlin-level GC tests need a `newkotlinc` binary, which

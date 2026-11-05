@@ -157,7 +157,14 @@ pub fn measure(a: std.mem.Allocator, cfg: Config, b: Bench, gc: []const u8) !Mea
     const nkc = try std.fmt.allocPrint(a, "{s}/bin/newkotlinc", .{cfg.root});
     const src = try std.fmt.allocPrint(a, "{s}/{s}", .{ cfg.root, b.source });
     const gcflag = try std.fmt.allocPrint(a, "--gc={s}", .{gc});
-    const comp = try spawn(a, &.{ nkc, gcflag, src, "-o", exe }, &.{}, cfg.root);
+    // Boehm is a benchmark-only baseline from bench/gc/third_party/boehm, reachable through bench/gc/gcdir.sh.
+    var env: []const []const u8 = &.{};
+    if (std.mem.eql(u8, gc, "boehm")) {
+        const gd = try spawn(a, &.{ "/bin/sh", try std.fmt.allocPrint(a, "{s}/bench/gc/gcdir.sh", .{cfg.root}) }, &.{}, cfg.root);
+        if (!gd.exit_ok) return error.GcDirFailed;
+        env = &.{try std.fmt.allocPrint(a, "NEWKOTLIN_GC_DIR={s}/compiler/build/bench-gc-dir", .{cfg.root})};
+    }
+    const comp = try spawn(a, &.{ nkc, gcflag, src, "-o", exe }, env, cfg.root);
     if (!comp.exit_ok) {
         std.debug.print("\n[{s}] compiling {s} with {s} FAILED:\n{s}\n", .{ b.name, src, gcflag, comp.output });
         return error.CompileFailed;

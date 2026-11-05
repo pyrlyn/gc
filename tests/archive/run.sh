@@ -1,6 +1,6 @@
 #!/bin/bash
 # GC tests (separate from feature and upstream tests). For every implementation in compiler/gc/*/gc.c
-# (or $GCS, e.g. GCS="perceus boehm"), according to its caps file
+# (or $GCS, e.g. GCS="perceus rc"), according to its caps file
 # (cycles = reclaims unreachable cycles, precise = live object count is exact at exit, asan = ASan-compatible):
 #   1. unit/gc_unit.c: C tests of the kxgc.h interface (built with clang, -O1 and -O3).
 #   2. kt/*.kt: GC-agnostic Kotlin tests; stdout must equal <name>.out. Tests marked "// gc-needs: cycles"

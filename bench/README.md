@@ -1,7 +1,7 @@
 # GC benchmarks
 
 Reproducible comparisons of the `--gc` implementations ([compiler/gc](../../compiler/gc/README.md)).
-Run `mise install` in the repo first (bdwgc for `--gc=boehm`). Results go to `bench/results/gc/`.
+Run `mise install` in the repo and in `bench/gc/third_party/boehm` first (bdwgc for the benchmark-only `--gc=boehm`, wired in by `gcdir.sh`). Results go to `bench/results/gc/`.
 
 - `./compare.sh [gc ...]` (default `default boehm`): the whole KotlinX suite (`bench/nkbench.sh`: warm-up +
   5 runs, mean of the middle 3) once per GC; prints a table, best value per row in bold.

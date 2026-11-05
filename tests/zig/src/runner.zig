@@ -6,7 +6,7 @@
 //!
 //! New tests (not ports) print "gc-api ..." lines; --ported-only skips them.
 //! usage: gc-suite --obj DIR [--ported-only | --mt-only] [--coverage DIR]   (cwd: anywhere inside the repository)
-//! env:   GCS="perceus boehm" (subset), NKC, NK_CC as in run.sh.
+//! env:   GCS="perceus rc" (subset), NKC, NK_CC as in run.sh.
 const std = @import("std");
 const p = @import("proc.zig");
 

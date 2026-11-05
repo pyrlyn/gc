@@ -8,6 +8,8 @@ set -eu
 cd "$(dirname "$0")/.."
 NKC=${NKC:-../bin/newkotlinc}
 gcs=${*:-epoch boehm perceus}
+# Boehm comes from bench/gc/third_party/boehm (benchmarks only): see gcdir.sh.
+export NEWKOTLIN_GC_DIR="${NEWKOTLIN_GC_DIR:-$(sh gc/gcdir.sh)}"
 mkdir -p results/gc ../compiler/build/gcmicro
 for g in $gcs; do for m in time rss pause_total pause_max pause_p50 pause_p99 collections; do : > results/gc/micro-$g-$m.txt; done; done
 # Opt-in, off by default (the default run measures everything):
