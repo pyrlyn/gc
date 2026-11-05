@@ -1,12 +1,13 @@
 //! Standalone host for symbols `kxgc.h` says the runtime provides.
 //! KotlinX supplies these from `compiler/runtime/runtime.c`. This file is the
-//! Linux/Zig equivalent used by native tests and benches (CLOCK_MONOTONIC).
+//! native equivalent used by tests and benches.
+//!
+//! Clock:
+//! - macOS: `clock_gettime_nsec_np(CLOCK_UPTIME_RAW)` (same as KotlinX runtime.c)
+//! - elsewhere: `clock_gettime(CLOCK_MONOTONIC)`
 const std = @import("std");
-const c = @cImport({
-    @cInclude("stdlib.h");
-    @cInclude("stdio.h");
-    @cInclude("time.h");
-});
+const builtin = @import("builtin");
+const c = std.c;
 
 pub export var rt_rel_draining: c_int = 0;
 pub export var rt_relo_owner: c_int = 0;
@@ -16,15 +17,26 @@ var gc_pauses: [*]i64 = undefined;
 var gc_pauses_len: usize = 0;
 var gc_pauses_cap: usize = 0;
 
+extern "c" fn clock_gettime_nsec_np(clock_id: c.clockid_t) u64;
+
 pub export fn rt_nanos() i64 {
-    var ts: c.timespec = .{ .tv_sec = 0, .tv_nsec = 0 };
-    if (c.clock_gettime(c.CLOCK_MONOTONIC, &ts) != 0) c.abort();
-    return @as(i64, ts.tv_sec) * 1_000_000_000 + @as(i64, ts.tv_nsec);
+    if (comptime builtin.os.tag == .macos) {
+        const nsec = clock_gettime_nsec_np(.UPTIME_RAW);
+        if (nsec == 0) c.abort();
+        return @intCast(nsec);
+    } else {
+        var ts: c.timespec = .{ .sec = 0, .nsec = 0 };
+        if (c.clock_gettime(.MONOTONIC, &ts) != 0) c.abort();
+        return @as(i64, ts.sec) * 1_000_000_000 + @as(i64, ts.nsec);
+    }
 }
 
 pub export fn rt_panic(msg: [*:0]const u8) noreturn {
-    _ = c.fflush(c.stdout);
-    _ = c.fprintf(c.stderr, "Exception in thread \"main\" java.lang.IllegalStateException: %s\n", msg);
+    var buf: [512]u8 = undefined;
+    const line = std.fmt.bufPrint(&buf, "Exception in thread \"main\" java.lang.IllegalStateException: {s}\n", .{std.mem.span(msg)}) catch {
+        c.abort();
+    };
+    _ = c.write(2, line.ptr, line.len);
     c.exit(1);
 }
 
@@ -45,18 +57,15 @@ pub fn oom() noreturn {
 }
 
 pub fn malloc(n: usize) *anyopaque {
-    const p = c.malloc(n) orelse oom();
-    return p;
+    return c.malloc(n) orelse oom();
 }
 
 pub fn calloc(n: usize) *anyopaque {
-    const p = c.calloc(1, n) orelse oom();
-    return p;
+    return c.calloc(1, n) orelse oom();
 }
 
 pub fn realloc(p: ?*anyopaque, n: usize) *anyopaque {
-    const q = c.realloc(p, n) orelse if (n == 0) unreachable else oom();
-    return q;
+    return c.realloc(p, n) orelse if (n == 0) unreachable else oom();
 }
 
 pub fn free(p: ?*anyopaque) void {
@@ -72,4 +81,11 @@ pub fn getenv_i64(name: [*:0]const u8, default_val: i64) i64 {
 pub fn getenv_present(name: [*:0]const u8) bool {
     const e = c.getenv(name) orelse return false;
     return e[0] != 0 and e[0] != '0';
+}
+
+/// Peak RSS in KiB. Linux `ru_maxrss` is already KiB; Darwin reports bytes.
+pub fn peakRssKb() i64 {
+    const ru = std.posix.getrusage(c.rusage.SELF);
+    if (builtin.os.tag == .macos) return @divTrunc(ru.maxrss, 1024);
+    return ru.maxrss;
 }

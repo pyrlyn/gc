@@ -47,17 +47,23 @@ Full description (object layout, RC + Perceus, regions, cycle collector, ownersh
 
 ## Native Zig port (in progress)
 
-Zig **0.14.1**. The C sources remain the immutable reference (baseline SHA
-recorded under [`artifacts/c-baseline`](artifacts/c-baseline)). Zig collectors
-in [`src/`](src/) export the same `kxgc.h` ABI. Status and leftovers:
-[`docs/zig-port.md`](docs/zig-port.md). **Not performance-ready** versus the
-frozen C ops baseline.
+Zig **0.17.1** (official latest 0.17, 2026-11-02,
+https://ziglang.org/download/). Not `0.17.0` via mise and not `0.18.0-dev`
+(master). C sources remain the immutable reference (SHA
+`21f34a960f8b56d1dcdf1ab55b8e5e14e4e8ff31`). Status:
+[`docs/zig-port.md`](docs/zig-port.md). **Not performance-ready.**
 
 ```
+zig version                         # must print 0.17.1
 zig build test                      # native suite, all collectors
-zig build --release=fast            # optimized test + ops binaries
+zig build --release=fast
 ./zig-out/bin/gc-ops-perceus 4000000
 ```
+
+Local Mac C vs Zig (same machine only): [`scripts/macos/`](scripts/macos/).
+Mac C medians already reported:
+[`artifacts/macos-local/c-reported/`](artifacts/macos-local/c-reported/).
+Paired Mac Zig timings are not in this repo yet. Linux VM logs are not Mac.
 
 ## Layout
 

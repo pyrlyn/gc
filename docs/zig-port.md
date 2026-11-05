@@ -1,7 +1,9 @@
 # Native Zig port
 
-Zig **0.14.1** (libc). Frozen C baseline: git SHA
-`21f34a960f8b56d1dcdf1ab55b8e5e14e4e8ff31`.
+Zig **0.17.1** (official latest 0.17 stable, 2026-11-02,
+https://ziglang.org/download/). `master` is **0.18.0-dev** — do not use it.
+
+Frozen C collector SHA: `21f34a960f8b56d1dcdf1ab55b8e5e14e4e8ff31`.
 
 ## Layout
 
@@ -13,24 +15,44 @@ src/{rc,perceus,incremental,epoch}.zig
 tests/native/suite.zig       gc_unit + api_test + traversal + one_pass
 bench/native/ops.zig         port of bench/ops/ops.c
 build.zig                    zig build test / zig build bench
-artifacts/c-baseline/        immutable pre-port C measurements
-artifacts/zig-bench/         Zig measurements on the same machine
+scripts/macos/               local Mac C + Zig 0.17.1 commands
+artifacts/c-baseline/        frozen Linux VM C measurements (not Mac)
+artifacts/zig-bench/         Linux VM Zig measurements (not Mac)
+artifacts/macos-local/       local Mac destination + runner-reported C medians
 ```
 
-Original C files stay in place as the immutable reference. They are not compiled
-by `build.zig`. The Zig collectors export the same `kxgc.h` functions.
+Original C files stay as the immutable reference. They are not compiled by
+`build.zig`. The Zig collectors export the same `kxgc.h` functions.
 
 ## Build / test / bench
 
 ```sh
-# Zig 0.14.1 on PATH
-zig build                          # Debug/ReleaseSafe test + ops binaries
-zig build test                     # native suite, all collectors
-zig build test -Dgc=perceus
-zig build --release=fast           # optimized test + ops binaries (LTO on ops)
+# Official Zig 0.17.1 on PATH (not 0.17.0, not 0.18.0-dev)
+zig version   # must print 0.17.1
+zig build test
+zig build --release=fast
 ./zig-out/bin/gc-test-<gc>
 ./zig-out/bin/gc-ops-<gc> [N] [op]
 ```
+
+### Local Mac (paired C vs Zig on that machine)
+
+```sh
+./scripts/macos/install-zig-0.17.1.sh   # refuses anything other than 0.17.1
+# mise 0.17.0 / 0.16.0 on the Mac are not 0.17.1
+export PATH="$PWD/.zig-0.17.1:$PATH"
+./scripts/macos/c-baseline.sh
+./scripts/macos/zig-regression.sh
+./scripts/macos/zig-bench.sh
+python3 scripts/macos/compare.py \
+  --label "local Mac" \
+  artifacts/macos-local/c/logs/ops-raw.txt \
+  artifacts/macos-local/zig/logs/ops-raw.txt
+```
+
+A Mac runner already recorded C medians (see
+`artifacts/macos-local/c-reported/`). Zig has **not** been timed on that Mac
+in this repository. Do not invent a Mac C-vs-Zig table.
 
 ## Ported
 
@@ -43,9 +65,10 @@ zig build --release=fast           # optimized test + ops binaries (LTO on ops)
 | `rc/gc.c` | yes |
 | `perceus/gc.c` | yes |
 | `incremental/gc.c` | yes |
-| `epoch/gc.c` log protocol, CRC trial deletion, Sigma/Delta, generations, drain | yes |
+| `epoch/gc.c` logs, CRC TD, Sigma/Delta, generations, drain | yes |
+| epoch slab-release allocator (default on, `KX_GC_SLAB_RELEASE=0` restores bump/free-list) | yes (serial) |
 | `tests/archive/unit/gc_unit.c` | yes (native) |
-| `tests/zig/src/unit/api_test.zig` | yes (native, no `@cImport`) |
+| `tests/zig/src/unit/api_test.zig` | yes (native) |
 | `tests/archive/unit/traversal.c` | yes (perceus / incremental) |
 | `tests/archive/incremental/one_pass.c` | yes |
 | `bench/ops/ops.c` | yes |
@@ -56,16 +79,15 @@ zig build --release=fast           # optimized test + ops binaries (LTO on ops)
 |---|---|
 | `tests/kt/*.kt`, `tests/epoch/*.kt`, `tests/incremental/*.kt` | Need `newkotlinc` + KotlinX runtime. Not in this repo. |
 | `bench/micro.sh`, `bench/compare.sh`, `bench/zig` | Need `newkotlinc` / `nkbench.sh`. Kotlin harnesses, not collectors. |
-| `bench/third_party/boehm` | Third-party C (bdwgc). Benchmark-only. License stays with that tree. |
-| `tests/zig/*` existing harness | Still links **C** collectors. Kept as the historical C-via-Zig suite. |
+| `bench/third_party/boehm` | Third-party C (bdwgc). Benchmark-only. |
+| `tests/zig/*` existing harness | Still links **C** collectors. Historical C-via-Zig suite. |
 | `tests/zig/mutation` | Mutates C source. |
-| epoch parallel MarkGray/Scan, incremental major, side-minor, early validation, slab `madvise` | Semantics of logs / CRC / Sigma-Delta / generations are implemented. Those C paths are pause/RSS optimizations; they are **not** claimed equivalent yet. |
-| `RT_LEAKCHECK` / ASan region tags | KotlinX `--leak-check` / `--alloc malloc` builds. Need the compiler. |
-| KotlinX `runtime.c` | Lives in pyrlyn/kotlinx. Host stub is Linux `CLOCK_MONOTONIC` only. |
+| epoch parallel MarkGray/Scan, incremental major, side-minor, early validation | C pause/RSS paths. Not claimed equivalent. Serial collector thread = `KX_GC_THREADS=1`. |
+| `RT_LEAKCHECK` / ASan region tags | Compiler-driven. |
+| KotlinX `runtime.c` | Lives in pyrlyn/kotlinx. Host stub matches its clock on macOS. |
 
 ## Verdict
 
-**NOT READY** for a performance-sensitive pin. Native tests pass. Optimized ops
-benches are meaningfully slower than the frozen C baseline in several
-categories (see `artifacts/zig-bench` and the PR table). Do not update C
-baselines.
+**NOT READY.** Native tests pass on Zig 0.17.1 (Debug and ReleaseFast, 4/4).
+Mac C is recorded; paired Mac Zig numbers are not in this repo yet. Linux VM
+Zig ops are still not a substitute for Mac-to-Mac. Do not update C baselines.

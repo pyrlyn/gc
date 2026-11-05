@@ -1,9 +1,12 @@
 /* Host stubs for symbols declared "provided by the runtime" in kxgc.h.
- * Used only to compile/run the original C collectors and C benches/tests on Linux.
- * This file is NOT part of the GC and does not modify any collector source.
- * KotlinX runtime.c uses clock_gettime_nsec_np(CLOCK_UPTIME_RAW) (macOS); Linux
- * equivalent is clock_gettime(CLOCK_MONOTONIC). Pause-percentile bookkeeping
- * matches runtime.c so KX_GC_STATS=1 output is comparable. */
+ * Used only to compile/run the original C collectors and C benches/tests
+ * standalone. This file is NOT part of the GC and does not modify any collector.
+ * Clock matches KotlinX runtime.c on macOS (clock_gettime_nsec_np CLOCK_UPTIME_RAW)
+ * and uses CLOCK_MONOTONIC on Linux. Pause-percentile bookkeeping matches
+ * runtime.c so KX_GC_STATS=1 output is comparable. */
+#if defined(__APPLE__)
+#define _DARWIN_C_SOURCE 1
+#endif
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -17,9 +20,16 @@ _Thread_local int rt_trav_mode;
 int rt_relo_owner;
 
 int64_t rt_nanos(void) {
+#if defined(__APPLE__)
+    /* Same clock as KotlinX compiler/runtime/runtime.c. */
+    uint64_t nsec = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    if (nsec == 0) abort();
+    return (int64_t)nsec;
+#else
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) abort();
     return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+#endif
 }
 
 void rt_panic(const char *msg) {

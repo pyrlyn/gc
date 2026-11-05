@@ -8,7 +8,7 @@ const RT_SIZE_CLASS_SHIFT: u6 = 3;
 const RT_SLAB_BYTES: usize = 1 << 16;
 
 const Pool = struct {
-    free_list: [RT_CLASSES + 1]?*anyopaque = [_]?*anyopaque{null} ** (RT_CLASSES + 1),
+    free_list: [RT_CLASSES + 1]?*anyopaque = @splat(null),
     ptr: [*]u8 = undefined,
     end: [*]u8 = undefined,
     inited: bool = false,

@@ -1,0 +1,27 @@
+# Linux cloud VM smoke only. NOT a local Mac result.
+# date=2026-11-05T23:15:38Z zig=0.17.1 uname=Linux
+# N=1000000 one pass (not the 5-round interleaved Mac/C protocol)
+perceus rc_pair 1.91
+perceus field_store 4.72
+perceus alloc_drop 5.40
+perceus lru_move 35.54
+perceus pause_ms 1.4
+perceus peak_rss_kb 5884
+incremental rc_pair 2.32
+incremental field_store 4.42
+incremental alloc_drop 7.86
+incremental lru_move 46.03
+incremental pause_ms 1.3
+incremental peak_rss_kb 5864
+epoch rc_pair 7.70
+epoch field_store 8.16
+epoch alloc_drop 23.41
+epoch lru_move 81.89
+epoch pause_ms 135.5
+epoch peak_rss_kb 8760
+rc rc_pair 1.71
+rc field_store 4.31
+rc alloc_drop 5.76
+rc lru_move 36.05
+rc pause_ms 0.0
+rc peak_rss_kb 5252

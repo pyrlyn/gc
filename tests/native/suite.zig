@@ -303,7 +303,7 @@ var node_vt: kx.VTab = .{ .rel = nodeRel, .trav = nodeTrav, .relo = nodeRelo, .f
 
 fn nodeNew() *Node {
     const n: *Node = @ptrCast(@alignCast(gc.rt_alloc_trace(@sizeOf(Node)).?));
-    n.* = .{ .hdr = 0, .vt = &node_vt, .edges = [_]?*Node{null} ** FANOUT };
+    n.* = .{ .hdr = 0, .vt = &node_vt, .edges = @splat(null) };
     return n;
 }
 fn edge(from: *Node, slot: usize, to: *Node) void {

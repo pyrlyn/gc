@@ -5,20 +5,13 @@
 //! KX_GC_INC_MAJOR=0). Semantics of logs, CRC trial deletion, Sigma/Delta,
 //! generations, return-to-mutator and exit drain match the C.
 const std = @import("std");
+const builtin = @import("builtin");
 const kx = @import("kxgc");
 const host = @import("host");
 const obj = @import("common/object.zig");
 
 pub const name = "epoch";
 pub const caps = .{ .cycles = true, .precise = true, .asan = true, .deferred = true };
-
-const c = @cImport({
-    @cInclude("pthread.h");
-    @cInclude("stdlib.h");
-    @cInclude("string.h");
-    @cInclude("sys/mman.h");
-    @cInclude("unistd.h");
-});
 
 const PAGE_SHIFT = 16;
 const PAGE: usize = 1 << PAGE_SHIFT;
@@ -64,24 +57,243 @@ fn isTraced(p: ?*anyopaque) bool {
     return (page_bits.?[pg >> 6].load(.acquire) >> @intCast(pg & 63)) & 1 != 0;
 }
 
+const libc_mm = struct {
+    extern "c" fn mmap(addr: ?*anyopaque, len: usize, prot: c_int, flags: c_int, fd: c_int, off: isize) *anyopaque;
+    extern "c" fn munmap(addr: *anyopaque, len: usize) c_int;
+    extern "c" fn madvise(addr: *anyopaque, len: usize, advice: c_int) c_int;
+};
+
+fn mapAnon(bytes: usize, noreserve: bool) [*]u8 {
+    const prot: c_int = 1 | 2; // PROT_READ | PROT_WRITE
+    var flags: c_int = if (comptime builtin.os.tag == .macos)
+        0x0002 | 0x1000 // MAP_PRIVATE | MAP_ANON
+    else
+        0x0002 | 0x0020; // MAP_PRIVATE | MAP_ANONYMOUS
+    if (noreserve and comptime builtin.os.tag == .linux) flags |= 0x4000; // MAP_NORESERVE
+    const p = libc_mm.mmap(null, bytes, prot, flags, -1, 0);
+    if (p == std.c.MAP_FAILED) host.oom();
+    return @ptrCast(p);
+}
+
 fn ensureBits() void {
     if (page_bits != null) return;
     const bytes = (@as(usize, 1) << PAGE_BITS_LOG) / 8;
-    const m = std.posix.mmap(null, bytes, std.posix.PROT.READ | std.posix.PROT.WRITE, .{ .TYPE = .PRIVATE, .ANONYMOUS = true }, -1, 0) catch host.oom();
-    page_bits = @ptrCast(@alignCast(m.ptr));
+    page_bits = @ptrCast(@alignCast(mapAnon(bytes, true)));
+}
+
+const SLAB_CHUNK: usize = 2 << 20;
+const SLAB_DIR_TOP: usize = 1 << (PAGE_BITS_LOG - 16);
+const SLAB_RESIDENT_KEEP: i64 = 16;
+
+const Slab = extern struct {
+    next: ?*Slab = null,
+    prev: ?*Slab = null,
+    free: ?*anyopaque = null,
+    base: [*]u8 = undefined,
+    bump: [*]u8 = undefined,
+    live: u32 = 0,
+    cls: u16 = 0,
+    in_partial: u8 = 0,
+    resident: u8 = 1,
+};
+
+var slab_chunk: ?[*]u8 = null;
+var slab_chunk_end: [*]u8 = undefined;
+var slab_dir: [SLAB_DIR_TOP]?[*]?*Slab = @splat(null);
+var slab_cur: [CLASSES + 1]?*Slab = @splat(null);
+var slab_partial: [CLASSES + 1]?*Slab = @splat(null);
+var slab_pool: ?*Slab = null;
+var slab_pending = obj.PtrStack{};
+var slab_release: i32 = -1;
+var slab_keep: i64 = -1;
+var slab_pool_resident: i64 = 0;
+
+fn madvAdvice() c_int {
+    if (comptime builtin.os.tag == .macos) return std.c.MADV.FREE_REUSABLE;
+    return 4; // MADV_DONTNEED
+}
+
+fn madv(from: *anyopaque, len: usize) void {
+    if (len == 0) return;
+    _ = libc_mm.madvise(from, len, madvAdvice());
 }
 
 fn pageAlloc(bytes: usize) *anyopaque {
     ensureBits();
     var p: *anyopaque = undefined;
-    if (std.c.posix_memalign(@ptrCast(&p), PAGE, bytes) != 0) host.oom();
+    if (bytes == PAGE) {
+        if (slab_chunk == null or slab_chunk.? == slab_chunk_end) {
+            const want = SLAB_CHUNK + PAGE;
+            const mapped = mapAnon(want, false);
+            const raw_addr = @intFromPtr(mapped);
+            const aligned = (raw_addr + PAGE - 1) & ~@as(usize, PAGE - 1);
+            if (aligned > raw_addr) _ = libc_mm.munmap(@ptrFromInt(raw_addr), aligned - raw_addr);
+            if (aligned + SLAB_CHUNK < raw_addr + want) {
+                _ = libc_mm.munmap(@ptrFromInt(aligned + SLAB_CHUNK), raw_addr + want - (aligned + SLAB_CHUNK));
+            }
+            slab_chunk = @ptrFromInt(aligned);
+            slab_chunk_end = @ptrFromInt(aligned + SLAB_CHUNK);
+        }
+        p = @ptrCast(slab_chunk.?);
+        slab_chunk.? += PAGE;
+    } else {
+        if (std.c.posix_memalign(@ptrCast(&p), PAGE, bytes) != 0) host.oom();
+    }
     var o: usize = 0;
     while (o < bytes) : (o += PAGE) regAdd(@intFromPtr(p) + o);
     return p;
 }
 
+fn slabOf(p: *anyopaque) ?*Slab {
+    const pg = @intFromPtr(p) >> PAGE_SHIFT;
+    const d = slab_dir[pg >> 16] orelse return null;
+    return d[pg & 0xffff];
+}
+
+fn slabNew() *Slab {
+    const base: [*]u8 = @ptrCast(pageAlloc(PAGE));
+    const pg = @intFromPtr(base) >> PAGE_SHIFT;
+    var d = slab_dir[pg >> 16];
+    if (d == null) {
+        const raw = host.calloc((1 << 16) * @sizeOf(?*Slab));
+        d = @ptrCast(@alignCast(raw));
+        slab_dir[pg >> 16] = d;
+    }
+    const s: *Slab = @ptrCast(@alignCast(host.calloc(@sizeOf(Slab))));
+    s.base = base;
+    s.resident = 1;
+    d.?[pg & 0xffff] = s;
+    return s;
+}
+
+fn partialUnlink(s: *Slab, cls: usize) void {
+    if (s.prev) |prev| prev.next = s.next else slab_partial[cls] = s.next;
+    if (s.next) |next| next.prev = s.prev;
+    s.next = null;
+    s.prev = null;
+    s.in_partial = 0;
+}
+
+fn slabRefill(cls: usize) *anyopaque {
+    var s = slab_partial[cls];
+    if (s) |taken| {
+        partialUnlink(taken, cls);
+    } else if (slab_pool) |pooled| {
+        slab_pool = pooled.next;
+        pooled.next = null;
+        if (pooled.resident != 0) slab_pool_resident -= 1;
+        pooled.resident = 1;
+        pooled.free = null;
+        pooled.bump = pooled.base;
+        pooled.live = 0;
+        s = pooled;
+    } else {
+        const fresh = slabNew();
+        fresh.bump = fresh.base;
+        s = fresh;
+    }
+    const slab = s.?;
+    slab.cls = @intCast(cls);
+    slab_cur[cls] = slab;
+    var p: *anyopaque = undefined;
+    if (slab.free) |free_cell| {
+        p = free_cell;
+        const next: *?*anyopaque = @ptrCast(@alignCast(free_cell));
+        slab.free = next.*;
+    } else {
+        p = @ptrCast(slab.bump);
+        slab.bump += cls << 3;
+    }
+    slab.live += 1;
+    return p;
+}
+
+fn slabAlloc(cls: usize) *anyopaque {
+    if (slab_cur[cls]) |s| {
+        if (s.free) |free_cell| {
+            const next: *?*anyopaque = @ptrCast(@alignCast(free_cell));
+            s.free = next.*;
+            s.live += 1;
+            return free_cell;
+        }
+        if (@intFromPtr(s.bump) + (cls << 3) <= @intFromPtr(s.base) + PAGE) {
+            const p: *anyopaque = @ptrCast(s.bump);
+            s.bump += cls << 3;
+            s.live += 1;
+            return p;
+        }
+    }
+    return slabRefill(cls);
+}
+
+fn slabFree(p: *anyopaque, cls: usize) void {
+    const s = slabOf(p) orelse return;
+    const next: *?*anyopaque = @ptrCast(@alignCast(p));
+    next.* = s.free;
+    s.free = p;
+    if (s == slab_cur[cls]) {
+        s.live -= 1;
+        return;
+    }
+    s.live -= 1;
+    if (s.live == 0) {
+        if (s.in_partial != 0) partialUnlink(s, cls);
+        slab_pending.push(s);
+    } else if (s.in_partial == 0) {
+        s.in_partial = 1;
+        s.prev = null;
+        s.next = slab_partial[cls];
+        if (s.next) |n| n.prev = s;
+        slab_partial[cls] = s;
+    }
+}
+
+fn slabCmp(_: void, a: ?*anyopaque, b: ?*anyopaque) bool {
+    const sa: *Slab = @ptrCast(@alignCast(a.?));
+    const sb: *Slab = @ptrCast(@alignCast(b.?));
+    return @intFromPtr(sa.base) < @intFromPtr(sb.base);
+}
+
+fn slabFlush() void {
+    if (slab_pending.len == 0) return;
+    if (slab_keep < 0) {
+        slab_keep = host.getenv_i64("KX_GC_SLAB_KEEP", SLAB_RESIDENT_KEEP);
+        if (slab_keep < 0) slab_keep = 0;
+    }
+    var n: usize = 0;
+    var i: usize = 0;
+    while (i < slab_pending.len) : (i += 1) {
+        const s: *Slab = @ptrCast(@alignCast(slab_pending.at(i).?));
+        if (s.live != 0 or s == slab_cur[s.cls]) continue;
+        s.next = slab_pool;
+        slab_pool = s;
+        if (slab_pool_resident < slab_keep) {
+            slab_pool_resident += 1;
+            continue;
+        }
+        s.resident = 0;
+        slab_pending.set(n, s);
+        n += 1;
+    }
+    if (n > 1) std.mem.sort(?*anyopaque, slab_pending.items[0..n], {}, slabCmp);
+    i = 0;
+    while (i < n) {
+        var j = i + 1;
+        while (j < n) {
+            const prev: *Slab = @ptrCast(@alignCast(slab_pending.at(j - 1).?));
+            const nxt: *Slab = @ptrCast(@alignCast(slab_pending.at(j).?));
+            if (@intFromPtr(nxt.base) != @intFromPtr(prev.base) + PAGE) break;
+            j += 1;
+        }
+        const from: *Slab = @ptrCast(@alignCast(slab_pending.at(i).?));
+        madv(@ptrCast(from.base), (j - i) * PAGE);
+        i = j;
+    }
+    slab_pending.len = 0;
+}
+
 const Big = extern struct { next: ?*Big, size: usize };
-var free_list: [CLASSES + 1]?*anyopaque = [_]?*anyopaque{null} ** (CLASSES + 1);
+var free_list: [CLASSES + 1]?*anyopaque = @splat(null);
 var bump: ?[*]u8 = null;
 var bump_end: [*]u8 = undefined;
 var big_free: ?*Big = null;
@@ -109,12 +321,25 @@ pub export fn rt_gc_mem_free(p: ?*anyopaque) void {
     host.free(p);
 }
 
+var big_madvise: i32 = -1;
+fn bigRelease(p: *anyopaque, bytes: usize) void {
+    if (big_madvise < 0) {
+        const e = std.c.getenv("KX_GC_MADVISE");
+        big_madvise = if (e != null and e.?[0] == '0') 0 else 1;
+    }
+    if (big_madvise == 0) return;
+    const os_page = std.heap.pageSize();
+    if (bytes < 2 * os_page) return;
+    const from: [*]u8 = @ptrCast(p);
+    madv(@ptrCast(from + os_page), bytes - os_page);
+}
+
 pub export fn rt_alloc_trace(size: i64) ?*anyopaque {
     _ = t_allocs.fetchAdd(1, .monotonic);
     freePaced();
     const cls = (@as(usize, @intCast(size)) + 7) >> 3;
     if (cls > CLASSES) {
-        const bytes = ( @as(usize, @intCast(size)) + PAGE - 1) & ~@as(usize, PAGE - 1);
+        const bytes = (@as(usize, @intCast(size)) + PAGE - 1) & ~@as(usize, PAGE - 1);
         var b = big_free;
         var prev: *?*Big = &big_free;
         while (b) |blk| {
@@ -127,6 +352,11 @@ pub export fn rt_alloc_trace(size: i64) ?*anyopaque {
         }
         return pageAlloc(bytes);
     }
+    if (slab_release < 0) {
+        const e = std.c.getenv("KX_GC_SLAB_RELEASE");
+        slab_release = if (e != null and e.?[0] == '0') 0 else 1;
+    }
+    if (slab_release != 0) return slabAlloc(cls);
     if (free_list[cls]) |p| {
         const next: *?*anyopaque = @ptrCast(@alignCast(p));
         free_list[cls] = next.*;
@@ -153,6 +383,11 @@ pub export fn rt_free_trace(p: ?*anyopaque, size: i64) void {
         b.size = bytes;
         b.next = big_free;
         big_free = b;
+        bigRelease(q, bytes);
+        return;
+    }
+    if (slab_release > 0) {
+        slabFree(q, cls);
         return;
     }
     const next: *?*anyopaque = @ptrCast(@alignCast(q));
@@ -186,9 +421,28 @@ var log_floor: usize = LOG_FLOOR_DEFAULT;
 var c_pure: bool = false;
 var max_queued: usize = 0;
 var q_fixed: bool = false;
-var mu = std.Thread.Mutex{};
-var cv_work = std.Thread.Condition{};
-var cv_done = std.Thread.Condition{};
+var mu: std.c.pthread_mutex_t = std.c.PTHREAD_MUTEX_INITIALIZER;
+var cv_work: std.c.pthread_cond_t = std.c.PTHREAD_COND_INITIALIZER;
+var cv_done: std.c.pthread_cond_t = std.c.PTHREAD_COND_INITIALIZER;
+
+fn lock() void {
+    _ = std.c.pthread_mutex_lock(&mu);
+}
+fn unlock() void {
+    _ = std.c.pthread_mutex_unlock(&mu);
+}
+fn waitWork() void {
+    _ = std.c.pthread_cond_wait(&cv_work, &mu);
+}
+fn waitDone() void {
+    _ = std.c.pthread_cond_wait(&cv_done, &mu);
+}
+fn signalWork() void {
+    _ = std.c.pthread_cond_signal(&cv_work);
+}
+fn broadcastDone() void {
+    _ = std.c.pthread_cond_broadcast(&cv_done);
+}
 var cur: ?*Log = null;
 var q_head: ?*Log = null;
 var q_tail: ?*Log = null;
@@ -233,7 +487,7 @@ fn logCapFollow() void {
 }
 
 fn handoff() void {
-    mu.lock();
+    lock();
     if (!coll_started) {
         coll_started = true;
         const t = std.Thread.spawn(.{}, collectorMain, .{}) catch {
@@ -249,7 +503,7 @@ fn handoff() void {
             q_tail = l;
             q_len += 1;
             cur = null;
-            cv_work.signal();
+            signalWork();
         }
     }
     if (max_queued == 0) {
@@ -259,11 +513,11 @@ fn handoff() void {
             q_fixed = true;
         } else max_queued = Q_ADAPT_START;
     }
-    while (q_len > max_queued) cv_done.wait(&mu);
+    while (q_len > max_queued) waitDone();
     obj.PtrStack.moveFrom(&ret_local, &ret_shared);
     m_applied = applied;
     if (cur == null) cur = logNew();
-    mu.unlock();
+    unlock();
 }
 
 var c_roots = obj.PtrStack{};
@@ -552,9 +806,9 @@ fn closeSets() void {
         if (sum != v_internal) touchKeep(cw_m.at(start).?);
         start = end;
     }
-    mu.lock();
+    lock();
     const h = handed;
-    mu.unlock();
+    unlock();
     if (cw_ends.len == 0) return;
     const n = cw_m.len;
     const k = cw_ends.len;
@@ -741,21 +995,21 @@ fn fullCycle() void {
 
 fn publishReturns() void {
     if (c_ret.len == 0) return;
-    mu.lock();
+    lock();
     obj.PtrStack.moveFrom(&ret_shared, &c_ret);
-    mu.unlock();
+    unlock();
 }
 
 fn collectorMain() void {
-    mu.lock();
+    lock();
     while (true) {
-        while (q_head == null and !full_req and !shutting) cv_work.wait(&mu);
+        while (q_head == null and !full_req and !shutting) waitWork();
         if (q_head) |l| {
             q_head = l.next;
             if (q_head == null) q_tail = null;
             q_len -= 1;
-            cv_done.broadcast();
-            mu.unlock();
+            broadcastDone();
+            unlock();
             var i: usize = 0;
             while (i < l.frees.len) : (i += 1) host.free(l.frees.at(i));
             l.frees.len = 0;
@@ -770,22 +1024,22 @@ fn collectorMain() void {
             }
             gc_st.reclaimed += @intCast(freed);
             publishReturns();
-            mu.lock();
+            lock();
             applied = l.seq;
             l.next = log_pool;
             log_pool = l;
-            cv_done.broadcast();
+            broadcastDone();
         } else if (full_req) {
-            mu.unlock();
+            unlock();
             fullCycle();
             publishReturns();
-            mu.lock();
+            lock();
             full_req = false;
             full_done += 1;
-            cv_done.broadcast();
+            broadcastDone();
         } else break;
     }
-    mu.unlock();
+    unlock();
 }
 
 fn mutReleaseChild(t: ?*anyopaque) callconv(.c) void {
@@ -814,7 +1068,8 @@ fn processReturns() void {
 
 fn freePaced() void {
     if (ret_pos >= ret_local.len) return;
-    var k: usize = 2;
+    const back = ret_local.len - ret_pos;
+    var k: usize = if (back > 65536) 16 else if (back > 16384) 8 else if (back > 4096) 4 else 2;
     while (k > 0 and ret_pos < ret_local.len) : (k -= 1) {
         freeReturned(ret_local.at(ret_pos).?);
         ret_pos += 1;
@@ -833,9 +1088,9 @@ fn logFirst() void {
         log_cap.store(cap, .monotonic);
         log_cap_fixed = true;
     } else logCapFollow();
-    mu.lock();
+    lock();
     cur = logNew();
-    mu.unlock();
+    unlock();
 }
 
 inline fn logOp(e: usize) void {
@@ -848,22 +1103,23 @@ inline fn logOp(e: usize) void {
 
 fn boundary() void {
     if (in_boundary) {
-        mu.lock();
+        lock();
         handed += 1;
         cur.?.seq = handed;
         if (q_tail) |t| t.next = cur else q_head = cur;
         q_tail = cur;
         q_len += 1;
         cur = null;
-        cv_work.signal();
+        signalWork();
         cur = logNew();
-        mu.unlock();
+        unlock();
         return;
     }
     in_boundary = true;
     const t0 = host.rt_nanos();
     handoff();
     processReturns();
+    slabFlush();
     obj.statsAddPause(&gc_st, host.rt_nanos() - t0);
     in_boundary = false;
 }
@@ -902,15 +1158,15 @@ pub export fn rt_gc_collect() void {
     while (true) {
         const had = cur != null and (cur.?.n != 0 or cur.?.frees.len != 0);
         handoff();
-        mu.lock();
-        while (q_head != null) cv_done.wait(&mu);
+        lock();
+        while (q_head != null) waitDone();
         const want = full_done + 1;
         full_req = true;
-        cv_work.signal();
-        while (full_done < want) cv_done.wait(&mu);
+        signalWork();
+        while (full_done < want) waitDone();
         obj.PtrStack.moveFrom(&ret_local, &ret_shared);
         m_applied = applied;
-        mu.unlock();
+        unlock();
         const returned = ret_local.len - ret_pos;
         processReturns();
         if (!had and returned == 0 and !(cur != null and (cur.?.n != 0 or cur.?.frees.len != 0))) break;
@@ -923,8 +1179,8 @@ pub export fn rt_gc_name() [*:0]const u8 {
     return "epoch";
 }
 pub export fn rt_gc_stats(out: *kx.Stats) void {
-    mu.lock();
+    lock();
     out.* = gc_st;
-    mu.unlock();
+    unlock();
 }
 
