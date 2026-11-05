@@ -1,0 +1,35 @@
+// Known-good epoch GC baselines (and Boehm reference numbers) for bench/gc/zig.
+// Refresh with `zig build update-baselines` (see README.md, "Refreshing baselines").
+// Initial values:
+//   micro epoch  = PR #147 (perf/epoch-cycle-queue-bound, bench/results/gc-epoch-short-logs, "new" rows),
+//                  worse of run1/run2 per metric; 5 runs each, load 4.5-11.
+//   micro boehm  = same files, run1 "boehm" rows.
+//   suite        = PR #148 (bench/gc-rerun-2026-11-03, bench/results/gc/nk-{epoch,boehm}.txt), main before #147.
+.{
+    .provenance = "initial: #147 gc-epoch-short-logs (micro, 2026-11-03 11:45/12:28 EET) + #148 nk-*.txt (suite)",
+    .cyclic_rss_target_mib = 3.4,
+    .benches = .{
+        .{ .name = "alloc_throughput", .category = "allocation", .kind = .micro, .source = "bench/gc/micro/alloc_throughput.kt",
+           .epoch = .{ .time_ms = 79.9, .rss_mib = 2.2 }, .boehm = .{ .time_ms = 178.8, .rss_mib = 3.1 } },
+        .{ .name = "short_lived", .category = "allocation", .kind = .micro, .source = "bench/gc/micro/short_lived.kt",
+           .epoch = .{ .time_ms = 77.6, .rss_mib = 2.2 }, .boehm = .{ .time_ms = 135.8, .rss_mib = 3.1 } },
+        .{ .name = "live_heap_churn", .category = "big live heaps", .kind = .micro, .source = "bench/gc/micro/live_heap_churn.kt",
+           .epoch = .{ .time_ms = 501.5, .rss_mib = 33.7, .pause_max_ms = 2.970 }, .boehm = .{ .time_ms = 1358.8, .rss_mib = 40.5, .pause_max_ms = 14.136 } },
+        .{ .name = "big_live_churn", .category = "big live heaps", .kind = .micro, .source = "bench/gc/micro/big_live_churn.kt",
+           .epoch = .{ .time_ms = 711.3, .rss_mib = 170.3, .pause_max_ms = 10.686 }, .boehm = .{ .time_ms = 1460.1, .rss_mib = 485.5, .pause_max_ms = 212.907 } },
+        .{ .name = "huge_live_churn", .category = "big live heaps", .kind = .micro, .source = "bench/gc/micro/huge_live_churn.kt",
+           .epoch = .{ .time_ms = 1369.3, .rss_mib = 758.4, .pause_max_ms = 57.042 }, .boehm = .{ .time_ms = 2952.6, .rss_mib = 1867.6, .pause_max_ms = 966.025 } },
+        .{ .name = "cyclic_garbage", .category = "cyclic garbage", .kind = .micro, .source = "bench/gc/micro/cyclic_garbage.kt",
+           .epoch = .{ .time_ms = 155.1, .rss_mib = 4.1, .pause_max_ms = 0.126 }, .boehm = .{ .time_ms = 302.8, .rss_mib = 3.4, .pause_max_ms = 0.132 } },
+        .{ .name = "wide_graph_churn", .category = "wide graph", .kind = .micro, .source = "bench/gc/micro/wide_graph_churn.kt",
+           .epoch = .{ .time_ms = 4266.0, .rss_mib = 844.5, .pause_max_ms = 183.889 }, .boehm = .{ .time_ms = 7601.7, .rss_mib = 2097.3, .pause_max_ms = 2455.332 } },
+        .{ .name = "alloc", .category = "allocation", .kind = .suite, .source = "bench/cases/alloc/kotlin/Main.kt",
+           .epoch = .{ .time_ms = 76.404 }, .boehm = .{ .time_ms = 134.754 } },
+        .{ .name = "bigheap", .category = "bigheap", .kind = .suite, .source = "bench/cases/bigheap/kotlin/Main.kt",
+           .epoch = .{ .time_ms = 86.487 }, .boehm = .{ .time_ms = 1443.289 } },
+        .{ .name = "cycles", .category = "cyclic garbage", .kind = .suite, .source = "bench/cases/cycles/kotlin/Main.kt",
+           .epoch = .{ .time_ms = 174.764 }, .boehm = .{ .time_ms = 197.53 } },
+        .{ .name = "lru", .category = "LRU", .kind = .suite, .source = "bench/cases/lru/kotlin/Main.kt",
+           .epoch = .{ .time_ms = 402.723 }, .boehm = .{ .time_ms = 265.654 } },
+    },
+}

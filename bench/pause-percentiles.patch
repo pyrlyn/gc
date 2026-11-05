@@ -1,0 +1,117 @@
+diff --git a/bench/gc/micro.sh b/bench/gc/micro.sh
+index cc6f2cf..fdaf340 100755
+--- a/bench/gc/micro.sh
++++ b/bench/gc/micro.sh
+@@ -1,7 +1,7 @@
+ #!/bin/bash
+ # GC-only microbenchmarks (bench/gc/micro/*.kt) per GC implementation: time (warm-up + 5 runs, mean of the
+ # middle 3), peak RSS (/usr/bin/time -l), and the collector's own statistics (KX_GC_STATS=1: collections,
+-# total and max pause). Writes bench/results/gc/micro-<gc>-<metric>.txt and prints one table per metric
++# total, p50, p99 and max pause). Writes bench/results/gc/micro-<gc>-<metric>.txt and prints one table per metric
+ # (best value per row in bold).   bench/gc/micro.sh [gc ...]   (default: default boehm)
+ # One file per benchmark: bench/results/gc-micro/<bench>.json (one run per GC with all metrics, see record.py).
+ set -eu
+@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.."
+ NKC=${NKC:-../bin/newkotlinc}
+ gcs=${*:-default boehm}
+ mkdir -p results/gc ../compiler/build/gcmicro
+-for g in $gcs; do for m in time rss pause_total pause_max collections; do : > results/gc/micro-$g-$m.txt; done; done
++for g in $gcs; do for m in time rss pause_total pause_max pause_p50 pause_p99 collections; do : > results/gc/micro-$g-$m.txt; done; done
+ # Interleaved: every timed run goes through all GCs before the next one, so load drift hits all alike.
+ for src in gc/micro/*.kt; do
+   c=$(basename "$src" .kt)
+@@ -23,15 +23,15 @@ for src in gc/micro/*.kt; do
+     rss=$( { /usr/bin/time -l "$b" >/dev/null; } 2>&1 | awk '/maximum resident set size/ {print $1}')
+     echo "$c $(python3 -c "print(round($rss/1048576, 1))")" >> results/gc/micro-$g-rss.txt
+     st=$(KX_GC_STATS=1 "$b" 2>&1 >/dev/null | grep '^gc-stats:')
+-    for m in collections pause_total pause_max; do
++    for m in collections pause_total pause_max pause_p50 pause_p99; do
+       echo "$c $(echo "$st" | grep -oE "$m=[0-9.]+" | cut -d= -f2)" >> results/gc/micro-$g-$m.txt
+     done
+     v() { awk -v c="$c" '$1 == c {print $2}' "results/gc/micro-$g-$1.txt"; }
+     python3 record.py gc-micro "$c" --run "micro-$g" --gc "$g" ms="$(v time)" raw_ns="$(echo $ts | tr ' ' ',')" \
+-      peak_rss_mib="$(v rss)" pause_total_ms="$(v pause_total)" pause_max_ms="$(v pause_max)" collections="$(v collections)"
++      peak_rss_mib="$(v rss)" pause_total_ms="$(v pause_total)" pause_max_ms="$(v pause_max)" pause_p50_ms="$(v pause_p50)" pause_p99_ms="$(v pause_p99)" collections="$(v collections)"
+   done
+ done
+-for m in time:"case, ms" rss:"case, peak RSS MiB" pause_total:"case, total GC pause ms" pause_max:"case, max GC pause ms" collections:"case, collections"; do
++for m in time:"case, ms" rss:"case, peak RSS MiB" pause_total:"case, total GC pause ms" pause_p50:"case, p50 GC pause ms" pause_p99:"case, p99 GC pause ms" pause_max:"case, max GC pause ms" collections:"case, collections"; do
+   k=${m%%:*}; args=""; for g in $gcs; do args="$args $g=results/gc/micro-$g-$k.txt"; done
+   python3 gc/table.py --metric "${m#*:}" $args; echo
+ done | tee results/gc/micro-table.md
+diff --git a/compiler/gc/boehm/gc.c b/compiler/gc/boehm/gc.c
+index 1006f7b..60c0ef4 100644
+--- a/compiler/gc/boehm/gc.c
++++ b/compiler/gc/boehm/gc.c
+@@ -16,6 +16,7 @@ static void on_collection_event(GC_EventType e) {
+     else if (e == GC_EVENT_END) {
+         int64_t dt = rt_nanos() - collection_start_ns;
+         gc_st.pause_ns_total += dt; if (dt > gc_st.pause_ns_max) gc_st.pause_ns_max = dt;
++        rt_gc_note_pause(dt);
+     }
+ }
+ __attribute__((constructor(101))) static void boehm_init(void) { GC_INIT(); GC_set_on_collection_event(on_collection_event); }
+diff --git a/compiler/gc/common/object.inc b/compiler/gc/common/object.inc
+index 9cbab57..638c95d 100644
+--- a/compiler/gc/common/object.inc
++++ b/compiler/gc/common/object.inc
+@@ -59,4 +59,5 @@ static inline void *stack_pop(PtrStack *s) { return s->items[--s->len]; }
+ static inline void stats_add_pause(KxGcStats *st, int64_t pause_ns) {
+     st->pause_ns_total += pause_ns;
+     if (pause_ns > st->pause_ns_max) st->pause_ns_max = pause_ns;
++    rt_gc_note_pause(pause_ns);
+ }
+diff --git a/compiler/gc/kxgc.h b/compiler/gc/kxgc.h
+index b52209b..590cfc7 100644
+--- a/compiler/gc/kxgc.h
++++ b/compiler/gc/kxgc.h
+@@ -66,6 +66,8 @@ void rt_gc_stats(KxGcStats *out);
+ // ---- provided by the runtime ----
+ void rt_panic(const char *msg) __attribute__((noreturn));
+ int64_t rt_nanos(void);
++/* Records one collector pause for the pause percentiles printed with KX_GC_STATS=1. */
++void rt_gc_note_pause(int64_t pause_ns);
+ /* Non-zero while the runtime releases objects that a deep release deferred (rt_rel_defer). They sit at count
+  * zero with their fields unreleased, as no object does in a collection, where a release runs to the end
+  * before the next step: a buffered one would pass for dead. A collection must not start meanwhile. */
+diff --git a/compiler/runtime/runtime.c b/compiler/runtime/runtime.c
+index 4dca97a..f1d6e0f 100644
+--- a/compiler/runtime/runtime.c
++++ b/compiler/runtime/runtime.c
+@@ -75,14 +75,34 @@ void rt_rel_defer(void *obj) {
+     rt_rel_draining = 0;
+ }
+ 
++/* Every collector pause, kept only to report percentiles at exit (KX_GC_STATS=1). */
++static int64_t *gc_pauses; static size_t gc_pauses_len, gc_pauses_cap;
++void rt_gc_note_pause(int64_t pause_ns) {
++    if (gc_pauses_len == gc_pauses_cap) {
++        size_t cap = gc_pauses_cap ? gc_pauses_cap * 2 : 1024;
++        int64_t *p = realloc(gc_pauses, cap * sizeof *p);
++        if (!p) return; /* statistics only: drop the sample rather than fail */
++        gc_pauses = p; gc_pauses_cap = cap;
++    }
++    gc_pauses[gc_pauses_len++] = pause_ns;
++}
++static int cmp_i64(const void *a, const void *b) { int64_t x = *(const int64_t *)a, y = *(const int64_t *)b; return (x > y) - (x < y); }
++/* Nearest-rank percentile in ms; 0 with no pauses. */
++static double gc_pause_pct(double q) {
++    if (!gc_pauses_len) return 0;
++    size_t i = (size_t)(q * gc_pauses_len + 0.999999); if (i < 1) i = 1; if (i > gc_pauses_len) i = gc_pauses_len;
++    return gc_pauses[i - 1] / 1e6;
++}
++
+ /* At exit: final collection; KX_GC_STATS=1 prints the GC's statistics to stderr (bench/gc/micro.sh). */
+ void rt_exit_flush(void) {
+     rt_gc_collect(); fflush(stdout);
+     const char *e = getenv("KX_GC_STATS");
+     if (e && *e && *e != '0') {
+         KxGcStats st; rt_gc_stats(&st);
+-        fprintf(stderr, "gc-stats: gc=%s collections=%lld reclaimed=%lld pause_total=%.3f pause_max=%.3f\n", rt_gc_name(),
+-                (long long)st.collections, (long long)st.reclaimed, st.pause_ns_total / 1e6, st.pause_ns_max / 1e6);
++        fprintf(stderr, "gc-stats: gc=%s collections=%lld reclaimed=%lld pause_total=%.3f pause_max=%.3f pause_p50=%.3f pause_p99=%.3f\n",
++                rt_gc_name(), (long long)st.collections, (long long)st.reclaimed, st.pause_ns_total / 1e6, st.pause_ns_max / 1e6,
++                (qsort(gc_pauses, gc_pauses_len, sizeof *gc_pauses, cmp_i64), gc_pause_pct(0.50)), gc_pause_pct(0.99));
+     }
+ }
+ 
