@@ -34,7 +34,10 @@ This host stub is not a collector edit.
 mkdir -p artifacts/macos-local/c/logs
 cp ~/Grok/gc-local-bench/c-logs/ops-raw.txt artifacts/macos-local/c/logs/
 
-# 6. Raw-format comparison (fixed artifact paths only; no CLI file paths)
+# 6. Mixed-N parser tests (in-memory; no CLI file paths), then compare
+#    compare.py keys (N, collector, op). Unlabeled lines default to N=4000000.
+#    It must not mix 100k/1M pause_ms into a 4M median (that produced a false +104%).
+python3 scripts/macos/test_compare.py
 python3 scripts/macos/compare.py --pair mac-local --label "local Mac"
 ```
 

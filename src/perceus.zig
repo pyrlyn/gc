@@ -20,8 +20,11 @@ pub export fn rt_alloc(size: i64) ?*anyopaque {
 pub export fn rt_free(p: ?*anyopaque, size: i64) void {
     regions.rtFree(p, size);
 }
-pub export fn rt_alloc_trace(size: i64) ?*anyopaque {
+pub inline fn allocTrace(size: i64) ?*anyopaque {
     return regions.rtAllocTrace(size);
+}
+pub export fn rt_alloc_trace(size: i64) ?*anyopaque {
+    return allocTrace(size);
 }
 pub export fn rt_free_trace(p: ?*anyopaque, size: i64) void {
     regions.rtFreeTrace(p, size);

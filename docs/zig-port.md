@@ -44,15 +44,16 @@ export PATH="$PWD/.zig-0.17.1:$PATH"
 ./scripts/macos/c-baseline.sh
 ./scripts/macos/zig-regression.sh
 ./scripts/macos/zig-bench.sh
+python3 scripts/macos/test_compare.py
 python3 scripts/macos/compare.py --pair mac-local --label "local Mac"
 ```
 
 Zig 0.17.1 has no LLVM LTO on Mach-O. Official `zig build --release=fast` uses
 ReleaseFast everywhere and full LTO only when the object format is ELF/COFF.
 
-A Mac runner already recorded C medians (see
-`artifacts/macos-local/c-reported/`). Zig has **not** been timed on that Mac
-in this repository. Do not invent a Mac C-vs-Zig table.
+Paired Mac numbers for SHA `31bdbcf` live on the runner at
+`~/Grok/gc-local-bench/` (not in this repo). `compare.py` now keys
+`(N, collector, op)` so mixed-N C logs are not aggregated against Zig 4M.
 
 ## Ported
 
@@ -89,5 +90,7 @@ in this repository. Do not invent a Mac C-vs-Zig table.
 ## Verdict
 
 **NOT READY.** Native tests pass on Zig 0.17.1 (Debug and ReleaseFast, 4/4).
-Mac C is recorded; paired Mac Zig numbers are not in this repo yet. Linux VM
-Zig ops are still not a substitute for Mac-to-Mac. Do not update C baselines.
+Mac SHA `31bdbcf` official scripts worked; perceus/incremental/rc ops were at
+or under C, but epoch `field_store` was still +26–29% at 100k/1M/4M (codegen,
+not LTO-only). Full collector parity is still incomplete. Linux VM timings are
+not Mac-to-Mac. Do not update C baselines.

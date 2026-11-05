@@ -116,6 +116,8 @@ echo "=== C unit tests ==="
 echo "=== ops (N=$N, ROUNDS=$ROUNDS, GCs interleaved) ==="
 {
   echo "# start $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "# N=$N"
+  echo "## N=$N"
   for r in $(seq "$ROUNDS"); do
     echo "# round $r"
     for g in $GCS; do

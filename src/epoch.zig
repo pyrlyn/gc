@@ -174,7 +174,8 @@ fn partialUnlink(s: *Slab, cls: usize) void {
     s.in_partial = 0;
 }
 
-fn slabRefill(cls: usize) *anyopaque {
+// C: `__attribute__((noinline)) void *slab_refill` — keep the slab_alloc hot path small.
+noinline fn slabRefill(cls: usize) *anyopaque {
     var s = slab_partial[cls];
     if (s) |taken| {
         partialUnlink(taken, cls);
@@ -208,18 +209,22 @@ fn slabRefill(cls: usize) *anyopaque {
     return p;
 }
 
-fn slabAlloc(cls: usize) *anyopaque {
-    if (slab_cur[cls]) |s| {
-        if (s.free) |free_cell| {
+inline fn slabAlloc(cls: usize) *anyopaque {
+    // C slab_alloc: likely current slab, then free-list / bump, else out-of-line refill.
+    const s = slab_cur[cls];
+    if (s != null) {
+        @branchHint(.likely);
+        const slab = s.?;
+        if (slab.free) |free_cell| {
             const next: *?*anyopaque = @ptrCast(@alignCast(free_cell));
-            s.free = next.*;
-            s.live += 1;
+            slab.free = next.*;
+            slab.live += 1;
             return free_cell;
         }
-        if (@intFromPtr(s.bump) + (cls << 3) <= @intFromPtr(s.base) + PAGE) {
-            const p: *anyopaque = @ptrCast(s.bump);
-            s.bump += cls << 3;
-            s.live += 1;
+        if (@intFromPtr(slab.bump) + (cls << 3) <= @intFromPtr(slab.base) + PAGE) {
+            const p: *anyopaque = @ptrCast(slab.bump);
+            slab.bump += cls << 3;
+            slab.live += 1;
             return p;
         }
     }
@@ -334,8 +339,9 @@ fn bigRelease(p: *anyopaque, bytes: usize) void {
     madv(@ptrCast(from + os_page), bytes - os_page);
 }
 
-pub export fn rt_alloc_trace(size: i64) ?*anyopaque {
-    _ = t_allocs.fetchAdd(1, .monotonic);
+pub inline fn allocTrace(size: i64) ?*anyopaque {
+    // C: relaxed load+store of a debug counter, not an RMW.
+    t_allocs.store(t_allocs.load(.monotonic) + 1, .monotonic);
     freePaced();
     const cls = (@as(usize, @intCast(size)) + 7) >> 3;
     if (cls > CLASSES) {
@@ -353,6 +359,7 @@ pub export fn rt_alloc_trace(size: i64) ?*anyopaque {
         return pageAlloc(bytes);
     }
     if (slab_release < 0) {
+        @branchHint(.unlikely);
         const e = std.c.getenv("KX_GC_SLAB_RELEASE");
         slab_release = if (e != null and e.?[0] == '0') 0 else 1;
     }
@@ -373,8 +380,12 @@ pub export fn rt_alloc_trace(size: i64) ?*anyopaque {
     return p;
 }
 
+pub export fn rt_alloc_trace(size: i64) ?*anyopaque {
+    return allocTrace(size);
+}
+
 pub export fn rt_free_trace(p: ?*anyopaque, size: i64) void {
-    _ = t_frees.fetchAdd(1, .monotonic);
+    t_frees.store(t_frees.load(.monotonic) + 1, .monotonic);
     const q = p orelse return;
     const cls = (@as(usize, @intCast(size)) + 7) >> 3;
     if (cls > CLASSES) {
@@ -470,8 +481,13 @@ fn logNew() *Log {
         l.frees.len = 0;
         return l;
     }
+    // C malloc + n/next/frees only. Do not `l.* = .{}` — that writes the 256 KiB
+    // `a[]` on every new log (mutator-visible when field_store fills a log).
     const l: *Log = @ptrCast(@alignCast(host.malloc(@sizeOf(Log))));
-    l.* = .{};
+    l.next = null;
+    l.n = 0;
+    l.seq = 0;
+    l.frees = .{};
     return l;
 }
 
@@ -1066,7 +1082,7 @@ fn processReturns() void {
     ret_pos = 0;
 }
 
-fn freePaced() void {
+inline fn freePaced() void {
     if (ret_pos >= ret_local.len) return;
     const back = ret_local.len - ret_pos;
     var k: usize = if (back > 65536) 16 else if (back > 16384) 8 else if (back > 4096) 4 else 2;
@@ -1080,7 +1096,8 @@ fn freePaced() void {
     }
 }
 
-fn logFirst() void {
+// C: `__attribute__((noinline)) void log_first` so log_op has no stack frame.
+noinline fn logFirst() void {
     const e = std.c.getenv("KX_GC_LOG_CAP");
     if (e != null and e.?[0] != 0) {
         var cap: usize = @intCast(host.getenv_i64("KX_GC_LOG_CAP", 512));
@@ -1094,14 +1111,17 @@ fn logFirst() void {
 }
 
 inline fn logOp(e: usize) void {
+    // C log_op: `if (cur == NULL) log_first(); cur->a[cur->n++] = e; if (n >= cap) boundary();`
     if (cur == null) {
         @branchHint(.unlikely);
         logFirst();
     }
     const l = cur.?;
-    l.a[l.n] = e;
-    l.n += 1;
-    if (l.n >= log_cap.load(.monotonic)) {
+    const n = l.n;
+    l.a[n] = e;
+    const n1 = n + 1;
+    l.n = n1;
+    if (n1 >= log_cap.load(.monotonic)) {
         @branchHint(.unlikely);
         boundary();
     }
@@ -1120,7 +1140,8 @@ pub inline fn writeBarrier(o: ?*anyopaque) void {
     logOp(@intFromPtr(o) | OP_MOD);
 }
 
-fn boundary() void {
+// Out of line like C: inlining this into log_op gives every retain/store a fat frame.
+noinline fn boundary() void {
     if (in_boundary) {
         lock();
         handed += 1;

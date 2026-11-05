@@ -29,6 +29,8 @@ GCS="perceus incremental epoch rc"
 N=4000000
 {
   echo "# start $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "# N=$N"
+  echo "## N=$N"
   for r in 1 2 3 4 5; do
     echo "# round $r"
     for g in $GCS; do

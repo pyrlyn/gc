@@ -62,6 +62,12 @@ inline fn retain(p: ?*Obj) void {
     if (p) |o| o.hdr += 1;
 }
 inline fn release(p: ?*Obj) void {
+    // C deferred ops.c: `#define RELEASE(p) rt_gc_log_dec(p)` (macro, not obj_rel).
+    // Going through callconv(.c) objRel here was a real extra call on Darwin no-LTO.
+    if (comptime gc.caps.deferred) {
+        gc.logDec(p);
+        return;
+    }
     objRel(p);
 }
 inline fn storeNext(o: *Obj, v: ?*Obj) void {
@@ -88,27 +94,31 @@ inline fn storePrev(o: *Obj, v: ?*Obj) void {
 }
 
 fn newObj(v: i64) *Obj {
-    const o: *Obj = @ptrCast(@alignCast(gc.rt_alloc_trace(@sizeOf(Obj)).?));
+    const o: *Obj = @ptrCast(@alignCast(gc.allocTrace(@sizeOf(Obj)).?));
     o.* = .{ .hdr = 1, .vt = &vt, .prev = null, .next = null, .val = v };
     return o;
 }
 
 fn opRc(n: i64, live: []?*Obj) void {
-    const nl: i64 = @intCast(live.len);
-    var i: i64 = 0;
-    while (i < n) : (i += 1) {
-        const o = live[@intCast(i & (nl - 1))].?;
+    const mask: usize = live.len - 1;
+    const nn: usize = @intCast(n);
+    var i: usize = 0;
+    while (i < nn) : (i += 1) {
+        const o = live[i & mask].?;
         retain(o);
         sink += o.val;
         release(o);
     }
 }
 fn opStore(n: i64, live: []?*Obj) void {
-    const nl: i64 = @intCast(live.len);
-    var i: i64 = 0;
-    while (i < n) : (i += 1) {
-        const o = live[@intCast(i & (nl - 1))].?;
-        storeNext(o, live[@intCast(@mod(i * 7 + 3, nl))]);
+    // C: live[(i * 7 + 3) & (nl - 1)] — nl is a power of two. @mod() is a
+    // division and was the field_store codegen gap vs clang, not LTO.
+    const mask: usize = live.len - 1;
+    const nn: usize = @intCast(n);
+    var i: usize = 0;
+    while (i < nn) : (i += 1) {
+        const o = live[i & mask].?;
+        storeNext(o, live[(i *% 7 + 3) & mask]);
     }
 }
 fn opAlloc(n: i64, live: []?*Obj) void {
