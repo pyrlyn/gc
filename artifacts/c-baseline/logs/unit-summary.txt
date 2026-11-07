@@ -1,0 +1,13 @@
+PASS gc-unit perceus -O1
+PASS gc-unit perceus -O3
+PASS gc-unit incremental -O1
+PASS gc-unit incremental -O3
+PASS gc-unit rc -O1
+PASS gc-unit rc -O3
+SKIP gc-unit epoch (deferred RC; same as archive/run.sh)
+PASS gc-traversal perceus -O1
+PASS gc-traversal perceus -O3
+PASS gc-traversal incremental -O1
+PASS gc-traversal incremental -O3
+PASS gc-incremental one_pass
+unit_fail=0

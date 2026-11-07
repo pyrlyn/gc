@@ -1,0 +1,36 @@
+# start: 2026-11-05T22:33:31Z load=0.47 0.27 0.12 1/241 3614
+# rss via os.wait4 ru_maxrss (KiB on Linux)
+## traversal N=4096
+gc=perceus n=4096 r=1 gc=perceus work_bytes=2048 pause_total_ns=3647539 pause_max_ns=1887250 TRAVERSAL OK elapsed_s=0.006 user_s=0.003 sys_s=0.003 peak_rss_kb=11644 
+gc=incremental n=4096 r=1 gc=incremental work_bytes=2048 pause_total_ns=2937048 pause_max_ns=1492320 TRAVERSAL OK elapsed_s=0.005 user_s=0.005 sys_s=0.000 peak_rss_kb=11632 
+gc=perceus n=4096 r=2 gc=perceus work_bytes=2048 pause_total_ns=2950000 pause_max_ns=1529397 TRAVERSAL OK elapsed_s=0.004 user_s=0.004 sys_s=0.000 peak_rss_kb=11600 
+gc=incremental n=4096 r=2 gc=incremental work_bytes=2048 pause_total_ns=2960881 pause_max_ns=1517460 TRAVERSAL OK elapsed_s=0.004 user_s=0.004 sys_s=0.000 peak_rss_kb=11644 
+gc=perceus n=4096 r=3 gc=perceus work_bytes=2048 pause_total_ns=3021893 pause_max_ns=1573046 TRAVERSAL OK elapsed_s=0.004 user_s=0.004 sys_s=0.000 peak_rss_kb=11620 
+gc=incremental n=4096 r=3 gc=incremental work_bytes=2048 pause_total_ns=2984216 pause_max_ns=1493948 TRAVERSAL OK elapsed_s=0.004 user_s=0.004 sys_s=0.000 peak_rss_kb=11612 
+gc=perceus n=4096 r=4 gc=perceus work_bytes=2048 pause_total_ns=4072772 pause_max_ns=2047089 TRAVERSAL OK elapsed_s=0.006 user_s=0.006 sys_s=0.000 peak_rss_kb=11640 
+gc=incremental n=4096 r=4 gc=incremental work_bytes=2048 pause_total_ns=2944960 pause_max_ns=1492373 TRAVERSAL OK elapsed_s=0.004 user_s=0.004 sys_s=0.000 peak_rss_kb=11628 
+gc=perceus n=4096 r=5 gc=perceus work_bytes=2048 pause_total_ns=3047715 pause_max_ns=1624361 TRAVERSAL OK elapsed_s=0.004 user_s=0.000 sys_s=0.004 peak_rss_kb=11632 
+gc=incremental n=4096 r=5 gc=incremental work_bytes=2048 pause_total_ns=3023420 pause_max_ns=1595302 TRAVERSAL OK elapsed_s=0.005 user_s=0.005 sys_s=0.000 peak_rss_kb=11632 
+## traversal N=16384
+gc=perceus n=16384 r=1 gc=perceus work_bytes=2048 pause_total_ns=11727816 pause_max_ns=5912585 TRAVERSAL OK elapsed_s=0.019 user_s=0.014 sys_s=0.005 peak_rss_kb=11632 
+gc=incremental n=16384 r=1 gc=incremental work_bytes=2048 pause_total_ns=12125470 pause_max_ns=6087900 TRAVERSAL OK elapsed_s=0.016 user_s=0.012 sys_s=0.004 peak_rss_kb=11580 
+gc=perceus n=16384 r=2 gc=perceus work_bytes=2048 pause_total_ns=11739394 pause_max_ns=6037675 TRAVERSAL OK elapsed_s=0.015 user_s=0.015 sys_s=0.000 peak_rss_kb=11644 
+gc=incremental n=16384 r=2 gc=incremental work_bytes=2048 pause_total_ns=11779383 pause_max_ns=5935830 TRAVERSAL OK elapsed_s=0.015 user_s=0.015 sys_s=0.000 peak_rss_kb=11600 
+gc=perceus n=16384 r=3 gc=perceus work_bytes=2048 pause_total_ns=12913621 pause_max_ns=6683876 TRAVERSAL OK elapsed_s=0.017 user_s=0.012 sys_s=0.004 peak_rss_kb=11628 
+gc=incremental n=16384 r=3 gc=incremental work_bytes=2048 pause_total_ns=11773792 pause_max_ns=6004150 TRAVERSAL OK elapsed_s=0.015 user_s=0.015 sys_s=0.000 peak_rss_kb=11644 
+gc=perceus n=16384 r=4 gc=perceus work_bytes=2048 pause_total_ns=11838943 pause_max_ns=6165664 TRAVERSAL OK elapsed_s=0.019 user_s=0.015 sys_s=0.004 peak_rss_kb=11632 
+gc=incremental n=16384 r=4 gc=incremental work_bytes=2048 pause_total_ns=11881926 pause_max_ns=6073813 TRAVERSAL OK elapsed_s=0.017 user_s=0.010 sys_s=0.007 peak_rss_kb=11628 
+gc=perceus n=16384 r=5 gc=perceus work_bytes=2048 pause_total_ns=11879450 pause_max_ns=6074407 TRAVERSAL OK elapsed_s=0.015 user_s=0.012 sys_s=0.004 peak_rss_kb=11632 
+gc=incremental n=16384 r=5 gc=incremental work_bytes=2048 pause_total_ns=11879181 pause_max_ns=6100157 TRAVERSAL OK elapsed_s=0.016 user_s=0.016 sys_s=0.000 peak_rss_kb=11644 
+## traversal N=32768
+gc=perceus n=32768 r=1 gc=perceus work_bytes=2048 pause_total_ns=24028810 pause_max_ns=12582453 TRAVERSAL OK elapsed_s=0.036 user_s=0.020 sys_s=0.016 peak_rss_kb=19892 
+gc=incremental n=32768 r=1 gc=incremental work_bytes=2048 pause_total_ns=24131632 pause_max_ns=12557603 TRAVERSAL OK elapsed_s=0.031 user_s=0.023 sys_s=0.008 peak_rss_kb=19892 
+gc=perceus n=32768 r=2 gc=perceus work_bytes=2048 pause_total_ns=23676820 pause_max_ns=12334256 TRAVERSAL OK elapsed_s=0.031 user_s=0.023 sys_s=0.008 peak_rss_kb=19888 
+gc=incremental n=32768 r=2 gc=incremental work_bytes=2048 pause_total_ns=24008052 pause_max_ns=12600292 TRAVERSAL OK elapsed_s=0.031 user_s=0.023 sys_s=0.008 peak_rss_kb=19892 
+gc=perceus n=32768 r=3 gc=perceus work_bytes=2048 pause_total_ns=24119819 pause_max_ns=12609579 TRAVERSAL OK elapsed_s=0.038 user_s=0.025 sys_s=0.013 peak_rss_kb=19872 
+gc=incremental n=32768 r=3 gc=incremental work_bytes=2048 pause_total_ns=24152666 pause_max_ns=12608077 TRAVERSAL OK elapsed_s=0.034 user_s=0.026 sys_s=0.008 peak_rss_kb=19868 
+gc=perceus n=32768 r=4 gc=perceus work_bytes=2048 pause_total_ns=23735476 pause_max_ns=12396556 TRAVERSAL OK elapsed_s=0.030 user_s=0.026 sys_s=0.004 peak_rss_kb=19888 
+gc=incremental n=32768 r=4 gc=incremental work_bytes=2048 pause_total_ns=24019527 pause_max_ns=12529667 TRAVERSAL OK elapsed_s=0.031 user_s=0.027 sys_s=0.004 peak_rss_kb=19876 
+gc=perceus n=32768 r=5 gc=perceus work_bytes=2048 pause_total_ns=23848809 pause_max_ns=12352214 TRAVERSAL OK elapsed_s=0.034 user_s=0.031 sys_s=0.004 peak_rss_kb=19868 
+gc=incremental n=32768 r=5 gc=incremental work_bytes=2048 pause_total_ns=23938711 pause_max_ns=12385246 TRAVERSAL OK elapsed_s=0.031 user_s=0.026 sys_s=0.004 peak_rss_kb=19868 
+# end: 2026-11-05T22:33:33Z

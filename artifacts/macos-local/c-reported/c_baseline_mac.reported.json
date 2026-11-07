@@ -1,0 +1,35 @@
+{
+  "kind": "macos_c_baseline_reported_by_local_runner",
+  "note": "Measured on the Mac, not on the cloud VM. Raw files live on the Mac at ~/Grok/gc-local-bench/c-logs/. This JSON is a copy of the runner-supplied medians so the Zig port can target them. Not a C-vs-Zig comparison.",
+  "c_git_sha": "21f34a960f8b56d1dcdf1ab55b8e5e14e4e8ff31",
+  "host": {
+    "cpu": "Apple M3 Max",
+    "arch": "arm64",
+    "os": "macOS 27.0.1",
+    "cc": "Apple clang 21",
+    "opt": "-O3 -flto",
+    "clock": "clock_gettime_nsec_np(CLOCK_UPTIME_RAW)"
+  },
+  "method": "5 interleaved rounds, N=4000000, median ns/op",
+  "ops_n4m_median_ns": {
+    "perceus": {"rc_pair": 1.34, "field_store": 2.40, "alloc_drop": 3.60, "lru_move": 24.96, "pause_ms": 0.9},
+    "incremental": {"rc_pair": 1.34, "field_store": 2.48, "alloc_drop": 3.75, "lru_move": 25.63, "pause_ms": 0.9},
+    "epoch": {"rc_pair": 3.65, "field_store": 5.10, "alloc_drop": 15.86, "lru_move": 55.55, "pause_ms": 520.9},
+    "rc": {"rc_pair": 1.00, "field_store": 2.16, "alloc_drop": 3.40, "lru_move": 26.83, "pause_ms": 0.0}
+  },
+  "peak_rss_mib_extra_n4m": {
+    "perceus": 5.42,
+    "incremental": 5.42,
+    "epoch": 9.14,
+    "rc": 4.77
+  },
+  "archive_units": {"pass": 11, "skip": 2, "fail": 0},
+  "zig_on_that_mac": {
+    "official_latest_stable": "0.17.1",
+    "official_date": "2026-11-02",
+    "official_url": "https://ziglang.org/download/",
+    "mise_installed": ["0.17.0", "0.16.0"],
+    "0.17.1_installed": false,
+    "note": "Use 0.17.1, not mise 0.17.0. master is 0.18.0-dev."
+  }
+}

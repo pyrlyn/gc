@@ -1,0 +1,30 @@
+Zig native regression (suite.zig = gc_unit + api_test + traversal + one_pass)
+
+Commands:
+  zig version                    # 0.14.1
+  zig build test                 # Debug (default) all collectors
+  zig build --release=fast && ./zig-out/bin/gc-test-{rc,perceus,incremental,epoch}
+
+Debug `zig build test` (2026-11-05):
+  gc=rc           SUITE OK
+  gc=perceus      SUITE OK  collections=32 reclaimed=204301
+  gc=incremental  SUITE OK  collections=81 reclaimed=216301
+  gc=epoch        SUITE OK  collections=0  reclaimed=2
+  collectors: 4/4 OK
+
+ReleaseFast binaries (same suite):
+  gc=rc           SUITE OK
+  gc=perceus      SUITE OK  collections=32 reclaimed=204301
+  gc=incremental  SUITE OK  collections=34 reclaimed=216301
+  gc=epoch        SUITE OK  collections=0  reclaimed=2
+  collectors: 4/4 OK
+
+C archive unit tests on the frozen SHA (unchanged C + Linux host stub):
+  11 PASS, 1 SKIP (epoch gc-unit, deferred), 0 FAIL
+  artifacts/c-baseline/logs/unit-summary.txt
+
+Limitations:
+  - Kotlin tests (tests/kt, tests/epoch, tests/incremental/*.kt) not run: no newkotlinc
+  - Existing tests/zig harness still targets C; not used as the native suite
+  - TSan/ASan/leak-check Kotlin builds not run
+  - Suite reports one SUITE OK/FAILED per collector, not the historical per-line PASS count

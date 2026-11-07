@@ -1,0 +1,29 @@
+# rss
+## perceus
+perceus rc_pair 2.36
+perceus field_store 4.93
+perceus alloc_drop 5.84
+perceus lru_move 33.72
+perceus pause_ms 1.3
+elapsed_s=0.941 user_s=0.941 sys_s=0.000 peak_rss_kb=11628
+## incremental
+incremental rc_pair 2.19
+incremental field_store 4.59
+incremental alloc_drop 6.98
+incremental lru_move 47.59
+incremental pause_ms 1.3
+elapsed_s=1.235 user_s=1.235 sys_s=0.000 peak_rss_kb=11636
+## epoch
+epoch rc_pair 8.29
+epoch field_store 8.47
+epoch alloc_drop 45.70
+epoch lru_move 86.11
+epoch pause_ms 1066.1
+elapsed_s=5.798 user_s=5.616 sys_s=0.182 peak_rss_kb=11632
+## rc
+rc rc_pair 1.70
+rc field_store 4.24
+rc alloc_drop 5.30
+rc lru_move 33.61
+rc pause_ms 0.0
+elapsed_s=0.901 user_s=0.901 sys_s=0.000 peak_rss_kb=11636

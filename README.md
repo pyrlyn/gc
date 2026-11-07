@@ -45,6 +45,26 @@ linked into every program.
 Full description (object layout, RC + Perceus, regions, cycle collector, ownership rules):
 [`docs/architecture.md`](docs/architecture.md).
 
+## Native Zig port (in progress)
+
+Zig **0.17.1** (official latest 0.17, 2026-11-02,
+https://ziglang.org/download/). Not `0.17.0` via mise and not `0.18.0-dev`
+(master). C sources remain the immutable reference (SHA
+`21f34a960f8b56d1dcdf1ab55b8e5e14e4e8ff31`). Status:
+[`docs/zig-port.md`](docs/zig-port.md). **Not performance-ready.**
+
+```
+zig version                         # must print 0.17.1
+zig build test                      # native suite, all collectors
+zig build --release=fast
+./zig-out/bin/gc-ops-perceus 4000000
+```
+
+Local Mac C vs Zig (same machine only): [`scripts/macos/`](scripts/macos/).
+Mac C medians already reported:
+[`artifacts/macos-local/c-reported/`](artifacts/macos-local/c-reported/).
+Paired Mac Zig timings are not in this repo yet. Linux VM logs are not Mac.
+
 ## Layout
 
 | path | contents |
@@ -53,9 +73,12 @@ Full description (object layout, RC + Perceus, regions, cycle collector, ownersh
 | `common/regions.inc` | RC and tracing regions, `rt_gc_mem_*` (RC implementations) |
 | `common/object.inc` | header/vtable accessors, colors, pointer stack |
 | `common/trial_deletion.inc` | MarkGray / Scan / CollectWhite passes and the adaptive threshold |
-| `<name>/gc.c`, `<name>/caps`, `<name>/config.sh` | one implementation |
+| `<name>/gc.c`, `<name>/caps`, `<name>/config.sh` | C reference implementation |
+| `src/` | native Zig collectors (same ABI) |
 | `tests/` | unit and Kotlin tests for every implementation |
+| `tests/native/` | Zig suite against the Zig collectors |
 | `docs/` | architecture, plans |
+| `artifacts/` | frozen C baseline and Zig bench logs |
 
 ## Environment variables
 

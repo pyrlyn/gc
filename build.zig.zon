@@ -1,0 +1,14 @@
+.{
+    .name = .kxgc,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.17.1",
+    .fingerprint = 0x69865b741eb201a9,
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "tests/native",
+        "bench/native",
+        "kxgc.h",
+    },
+}
