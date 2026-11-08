@@ -13,9 +13,47 @@ pub export var rt_rel_draining: c_int = 0;
 pub export var rt_relo_owner: c_int = 0;
 pub export threadlocal var rt_trav_mode: c_int = 0;
 
-var gc_pauses: [*]i64 = undefined;
-var gc_pauses_len: usize = 0;
-var gc_pauses_cap: usize = 0;
+/// Pause histogram for percentiles (KX_GC_STATS-style p50/p99). runtime.c keeps every pause in a
+/// growing array; an epoch run has hundreds of thousands of boundary pauses, so that array was
+/// ~2 MiB of the bench's peak RSS. Log-linear buckets instead: exact below 16 ns, then 16 linear
+/// sub-buckets per power of two (≤ 1/16 relative error), fixed 7.5 KiB.
+const PAUSE_SUB_BITS = 4;
+const PAUSE_SUB: u64 = 1 << PAUSE_SUB_BITS;
+const PAUSE_BUCKETS = (64 - PAUSE_SUB_BITS) * PAUSE_SUB; // exponents up to 62 (largest i64)
+var gc_pause_hist: [PAUSE_BUCKETS]u64 = @splat(0);
+var gc_pause_n: u64 = 0;
+var gc_pause_max: u64 = 0;
+
+fn pauseBucket(v: u64) usize {
+    if (v < PAUSE_SUB) return @intCast(v);
+    const e: u64 = 63 - @clz(v);
+    const shift: u6 = @intCast(e - PAUSE_SUB_BITS);
+    return @intCast((e - PAUSE_SUB_BITS + 1) * PAUSE_SUB + ((v >> shift) & (PAUSE_SUB - 1)));
+}
+
+/// Largest value that falls into bucket `i`.
+fn pauseBucketTop(i: usize) u64 {
+    if (i < PAUSE_SUB) return i;
+    const g = i / PAUSE_SUB;
+    const shift: u6 = @intCast(g - 1);
+    const low = (PAUSE_SUB + i % PAUSE_SUB) << shift;
+    return low + ((@as(u64, 1) << shift) - 1);
+}
+
+/// Nearest-rank percentile (q in 0..1) of the recorded pauses in ns, as the top of its bucket
+/// (capped by the largest pause); 0 with no pauses.
+pub fn pausePercentileNs(q: f64) i64 {
+    if (gc_pause_n == 0) return 0;
+    const n: f64 = @floatFromInt(gc_pause_n);
+    var rank: u64 = @intFromFloat(@ceil(q * n));
+    rank = std.math.clamp(rank, 1, gc_pause_n);
+    var seen: u64 = 0;
+    for (gc_pause_hist, 0..) |count, i| {
+        seen += count;
+        if (seen >= rank) return @intCast(@min(pauseBucketTop(i), gc_pause_max));
+    }
+    return @intCast(gc_pause_max);
+}
 
 extern "c" fn clock_gettime_nsec_np(clock_id: c.clockid_t) u64;
 
@@ -41,15 +79,33 @@ pub export fn rt_panic(msg: [*:0]const u8) noreturn {
 }
 
 pub export fn rt_gc_note_pause(pause_ns: i64) void {
-    if (gc_pauses_len == gc_pauses_cap) {
-        const cap = if (gc_pauses_cap == 0) @as(usize, 1024) else gc_pauses_cap * 2;
-        const raw = c.realloc(if (gc_pauses_cap == 0) null else @ptrCast(gc_pauses), cap * @sizeOf(i64));
-        if (raw == null) return;
-        gc_pauses = @ptrCast(@alignCast(raw.?));
-        gc_pauses_cap = cap;
+    const v: u64 = if (pause_ns > 0) @intCast(pause_ns) else 0;
+    gc_pause_hist[pauseBucket(v)] += 1;
+    gc_pause_n += 1;
+    if (v > gc_pause_max) gc_pause_max = v;
+}
+
+test "pause histogram buckets and percentiles" {
+    // buckets tile the range: each starts right after the previous one's top
+    var i: usize = 1;
+    while (i < PAUSE_BUCKETS) : (i += 1) try std.testing.expectEqual(i, pauseBucket(pauseBucketTop(i - 1) + 1));
+    for ([_]u64{ 0, 1, 15, 16, 17, 31, 32, 1000, 123_456_789, std.math.maxInt(i64) }) |v| {
+        const b = pauseBucket(v);
+        try std.testing.expect(b < PAUSE_BUCKETS);
+        try std.testing.expect(pauseBucketTop(b) >= v);
+        if (b > 0) try std.testing.expect(pauseBucketTop(b - 1) < v);
     }
-    gc_pauses[gc_pauses_len] = pause_ns;
-    gc_pauses_len += 1;
+    gc_pause_hist = @splat(0);
+    gc_pause_n = 0;
+    gc_pause_max = 0;
+    try std.testing.expectEqual(@as(i64, 0), pausePercentileNs(0.5));
+    var k: i64 = 1;
+    while (k <= 100) : (k += 1) rt_gc_note_pause(k * 1000); // 1..100 µs
+    const p50 = pausePercentileNs(0.5); // exact: 50 µs
+    try std.testing.expect(p50 >= 50_000 and p50 <= 50_000 + 50_000 / 16);
+    const p99 = pausePercentileNs(0.99); // exact: 99 µs
+    try std.testing.expect(p99 >= 99_000 and p99 <= 100_000);
+    try std.testing.expectEqual(@as(i64, 100_000), pausePercentileNs(1.0));
 }
 
 pub fn oom() noreturn {
@@ -64,14 +120,17 @@ pub fn calloc(n: usize) *anyopaque {
     return c.calloc(1, n) orelse oom();
 }
 
+/// `n` must be non-zero: realloc(p, 0) may legally return NULL (glibc frees p),
+/// which this non-null signature cannot express. Size-0 callers go through
+/// `regions.memRealloc` / `rt_gc_mem_realloc`, which handle it.
 pub fn realloc(p: ?*anyopaque, n: usize) *anyopaque {
-    return c.realloc(p, n) orelse if (n == 0) unreachable else oom();
+    std.debug.assert(n != 0);
+    return c.realloc(p, n) orelse oom();
 }
 
 pub fn free(p: ?*anyopaque) void {
     c.free(p);
 }
-
 pub fn getenv_i64(name: [*:0]const u8, default_val: i64) i64 {
     const e = c.getenv(name) orelse return default_val;
     if (e[0] == 0) return default_val;

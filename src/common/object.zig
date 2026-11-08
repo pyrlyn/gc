@@ -64,20 +64,27 @@ pub const PtrStack = struct {
     cap: usize = 0,
     owned: bool = false,
 
-    pub fn push(self: *PtrStack, obj: ?*anyopaque) void {
+    pub inline fn push(self: *PtrStack, obj: ?*anyopaque) void {
         if (self.len == self.cap) {
-            const new_cap = if (self.cap == 0) PTR_STACK_INITIAL_CAPACITY else self.cap * 2;
-            const bytes = new_cap * @sizeOf(?*anyopaque);
-            const raw = if (self.cap == 0)
-                host.malloc(bytes)
-            else
-                host.realloc(@ptrCast(self.items), bytes);
-            self.items = @ptrCast(@alignCast(raw));
-            self.cap = new_cap;
-            self.owned = true;
+            @branchHint(.unlikely);
+            self.grow(self.len + 1);
         }
         self.items[self.len] = obj;
         self.len += 1;
+    }
+
+    /// Out of line: keeps `push` a compare + store at every visitor call site.
+    noinline fn grow(self: *PtrStack, need: usize) void {
+        var new_cap = if (self.cap == 0) PTR_STACK_INITIAL_CAPACITY else self.cap * 2;
+        while (new_cap < need) new_cap *= 2;
+        const bytes = new_cap * @sizeOf(?*anyopaque);
+        const raw = if (self.cap == 0)
+            host.malloc(bytes)
+        else
+            host.realloc(@ptrCast(self.items), bytes);
+        self.items = @ptrCast(@alignCast(raw));
+        self.cap = new_cap;
+        self.owned = true;
     }
 
     pub fn pop(self: *PtrStack) ?*anyopaque {
@@ -98,9 +105,21 @@ pub const PtrStack = struct {
         self.* = .{};
     }
 
+    /// Moves every pointer of `from` onto `to` (same order as pushing them one by one).
+    /// An empty `to` just trades buffers with `from` (O(1); no copy while a lock is held);
+    /// otherwise one bulk copy.
     pub fn moveFrom(to: *PtrStack, from: *PtrStack) void {
-        var i: usize = 0;
-        while (i < from.len) : (i += 1) to.push(from.items[i]);
+        if (from.len == 0) return;
+        if (to.len == 0) {
+            const t = to.*;
+            to.* = from.*;
+            from.* = t;
+            from.len = 0;
+            return;
+        }
+        if (to.cap - to.len < from.len) to.grow(to.len + from.len);
+        @memcpy(to.items[to.len .. to.len + from.len], from.items[0..from.len]);
+        to.len += from.len;
         from.len = 0;
     }
 };

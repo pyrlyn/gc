@@ -64,22 +64,24 @@ pub inline fn rtFreeTrace(p: ?*anyopaque, size: i64) void {
     if (p) |q| trace_pool.free(q, size);
 }
 
+// C regions.inc: NULL is a valid result for n == 0 (malloc(0) / realloc(p, 0) may return
+// it); only a failed non-empty request is OutOfMemoryError.
 pub fn memAlloc(n: usize) ?*anyopaque {
-    if (n == 0) return host.malloc(0);
-    return host.malloc(n);
+    const p = std.c.malloc(n);
+    if (p == null and n != 0) host.oom();
+    return p;
 }
 
 pub fn memCalloc(n: usize) ?*anyopaque {
-    if (n == 0) return host.calloc(0);
-    return host.calloc(n);
+    const p = std.c.calloc(1, n);
+    if (p == null and n != 0) host.oom();
+    return p;
 }
 
 pub fn memRealloc(p: ?*anyopaque, n: usize) ?*anyopaque {
-    if (n == 0) {
-        host.free(p);
-        return host.malloc(0);
-    }
-    return host.realloc(p, n);
+    const q = std.c.realloc(p, n);
+    if (q == null and n != 0) host.oom();
+    return q;
 }
 
 pub fn memFree(p: ?*anyopaque) void {

@@ -9,6 +9,7 @@ const builtin = @import("builtin");
 const kx = @import("kxgc");
 const host = @import("host");
 const obj = @import("common/object.zig");
+const regions = @import("common/regions.zig");
 
 pub const name = "epoch";
 pub const caps = .{ .cycles = true, .precise = true, .asan = true, .deferred = true };
@@ -21,6 +22,7 @@ const LOG_CAP = 32768;
 const LOG_MIN = 2048;
 const LOG_PER_ROOT = 4;
 const LOG_FLOOR_DEFAULT = 512;
+const ALLOC_CUT: usize = 1024;
 const Q_ADAPT_START = 4;
 const Q_ADAPT_MIN = 2;
 const Q_ADAPT_MAX = 16;
@@ -120,6 +122,7 @@ fn madv(from: *anyopaque, len: usize) void {
 
 fn pageAlloc(bytes: usize) *anyopaque {
     ensureBits();
+    dbg_slab_bytes += @intCast(bytes);
     var p: *anyopaque = undefined;
     if (bytes == PAGE) {
         if (slab_chunk == null or slab_chunk.? == slab_chunk_end) {
@@ -155,7 +158,9 @@ fn slabNew() *Slab {
     const pg = @intFromPtr(base) >> PAGE_SHIFT;
     var d = slab_dir[pg >> 16];
     if (d == null) {
-        const raw = host.calloc((1 << 16) * @sizeOf(?*Slab));
+        // 512 KiB, one entry per 64 KiB page: anonymous zero pages so only the touched
+        // entries are resident (calloc may memset a recycled block).
+        const raw = mapAnon((1 << 16) * @sizeOf(?*Slab), false);
         d = @ptrCast(@alignCast(raw));
         slab_dir[pg >> 16] = d;
     }
@@ -304,8 +309,6 @@ var free_list: [CLASSES + 1]?*anyopaque = @splat(null);
 var bump: ?[*]u8 = null;
 var bump_end: [*]u8 = undefined;
 var big_free: ?*Big = null;
-var t_allocs: std.atomic.Value(i64) = std.atomic.Value(i64).init(0);
-var t_frees: std.atomic.Value(i64) = std.atomic.Value(i64).init(0);
 
 pub export fn rt_alloc(size: i64) ?*anyopaque {
     return host.malloc(@intCast(size));
@@ -315,14 +318,13 @@ pub export fn rt_free(p: ?*anyopaque, size: i64) void {
     host.free(p);
 }
 pub export fn rt_gc_mem_alloc(n: usize) ?*anyopaque {
-    if (n == 0) return host.malloc(0);
-    return host.malloc(n);
+    return regions.memAlloc(n);
 }
 pub export fn rt_gc_mem_calloc(n: usize) ?*anyopaque {
-    return host.calloc(n);
+    return regions.memCalloc(n);
 }
 pub export fn rt_gc_mem_realloc(p: ?*anyopaque, n: usize) ?*anyopaque {
-    return host.realloc(p, n);
+    return regions.memRealloc(p, n);
 }
 pub export fn rt_gc_mem_free(p: ?*anyopaque) void {
     host.free(p);
@@ -381,8 +383,13 @@ fn bigRelease(p: *anyopaque, bytes: usize) void {
 pub inline fn allocTrace(size: i64) ?*anyopaque {
     // Keep this body tiny so Darwin no-LTO inlines it into newObj / op_alloc
     // the way C -flto inlines rt_alloc_trace → slab_alloc. Cold paths are noinline.
-    t_allocs.store(t_allocs.load(.monotonic) + 1, .monotonic);
+    // (C's t_allocs/t_frees debug counters are never read by this port: not kept.)
     if (ret_pos < ret_local.len) freePaced();
+    alloc_left -%= 1;
+    if (alloc_left == 0) {
+        @branchHint(.unlikely);
+        allocCut();
+    }
     const cls = (@as(usize, @intCast(size)) + 7) >> 3;
     if (cls > CLASSES) {
         @branchHint(.unlikely);
@@ -401,7 +408,6 @@ pub export fn rt_alloc_trace(size: i64) ?*anyopaque {
 }
 
 pub inline fn freeTrace(p: ?*anyopaque, size: i64) void {
-    t_frees.store(t_frees.load(.monotonic) + 1, .monotonic);
     const q = p orelse return;
     const cls = (@as(usize, @intCast(size)) + 7) >> 3;
     if (cls > CLASSES) {
@@ -478,6 +484,7 @@ var cur: ?*Log = null;
 var q_head: ?*Log = null;
 var q_tail: ?*Log = null;
 var log_pool: ?*Log = null;
+var pool_len: usize = 0; // guarded by mu
 var q_len: usize = 0;
 var handed: u64 = 0;
 var applied: u64 = 0;
@@ -492,10 +499,31 @@ var coll_started: bool = false;
 var in_boundary: bool = false;
 var defer_live: bool = true;
 var boundary_keep: i64 = 0;
+/// Mutator-only entry limit of `cur`: log_cap when the log was started, lowered by allocCut.
+var log_lim: usize = 0;
+/// Traced allocations a log may still make before allocCut ends it.
+var alloc_left: usize = ALLOC_CUT;
+
+/// Garbage of a log comes back only after the collector applied it, and up to max_queued + 3 logs are
+/// in flight (filling, queued, applying, returned), so allocation-heavy logs at log_cap 4096 held ~1 MiB
+/// of dead cells (alloc_drop: 3.7 MiB of slabs for a 2.6 MiB live set). A log that made ALLOC_CUT
+/// traced allocations ends at its next entry; logs that allocate little keep the full log_cap
+/// (shorter logs cost rc_pair / lru_move a lot more boundaries for no memory gain).
+noinline fn allocCut() void {
+    alloc_left = ALLOC_CUT;
+    const l = cur orelse return;
+    if (l.n + 1 < log_lim) {
+        log_lim = l.n + 1;
+        dbg_alloc_cuts += 1;
+    }
+}
 
 fn logNew() *Log {
+    log_lim = log_cap.load(.monotonic);
+    alloc_left = ALLOC_CUT;
     if (log_pool) |l| {
         log_pool = l.next;
+        pool_len -= 1;
         l.n = 0;
         l.next = null;
         l.frees.len = 0;
@@ -503,7 +531,11 @@ fn logNew() *Log {
     }
     // C malloc + n/next/frees only. Do not `l.* = .{}` — that writes the 256 KiB
     // `a[]` on every new log (mutator-visible when field_store fills a log).
-    const l: *Log = @ptrCast(@alignCast(host.malloc(@sizeOf(Log))));
+    // Own anonymous mapping, not malloc: only the entries actually written become
+    // resident, and a trimmed log goes back to the OS (malloc kept ~256 KiB
+    // regions plus zone metadata dirty per log).
+    const l: *Log = @ptrCast(@alignCast(mapAnon(@sizeOf(Log), false)));
+    dbg_log_allocs += 1;
     l.next = null;
     l.n = 0;
     l.seq = 0;
@@ -520,6 +552,48 @@ fn logCapFollow() void {
     if (cap > LOG_CAP) cap = LOG_CAP;
     if (c_pure and c_threshold <= c_min_threshold and boost == 1 and log_floor < cap) cap = log_floor;
     log_cap.store(cap, .monotonic);
+}
+
+// C adaptive queue depth (was missing: the limit stayed at Q_ADAPT_START). Guarded by mu.
+const Q_ADAPT_COOL = 16; // hand-offs between two doublings
+const Q_ADAPT_WINDOW = 64;
+var q_win: u32 = 0;
+var q_win_bad: bool = false;
+var q_cool: u32 = 0;
+var q_target_ns: i64 = 0;
+
+/// A back-pressure wait `d` longer than the pause target doubles the limit (up to Q_ADAPT_MAX, at most
+/// once per Q_ADAPT_COOL hand-offs; at the maximum, logs grow instead via log_boost); a window of
+/// Q_ADAPT_WINDOW calm hand-offs (no wait over a quarter of the target, queue never past half the limit)
+/// first undoes a boost, then halves the limit (down to Q_ADAPT_MIN). A short queue confirms and returns
+/// garbage sooner and keeps fewer logs resident; a long one absorbs collector spikes.
+fn queueAdapt(d: i64) void {
+    if (q_cool != 0) q_cool -= 1;
+    if (d > q_target_ns and q_cool == 0) {
+        const boost = log_boost.load(.monotonic);
+        if (max_queued >= Q_ADAPT_MAX and !log_cap_fixed and !c_pure and LOG_MIN * boost < LOG_CAP) {
+            log_boost.store(boost * 2, .monotonic);
+            logCapFollow();
+        }
+        max_queued = @min(max_queued * 2, Q_ADAPT_MAX);
+        q_win = 0;
+        q_win_bad = false;
+        q_cool = Q_ADAPT_COOL;
+    } else if (d > q_target_ns) {
+        q_win_bad = true;
+    } else {
+        if (d > @divTrunc(q_target_ns, 4) or q_len * 2 > max_queued) q_win_bad = true;
+        q_win += 1;
+        if (q_win >= Q_ADAPT_WINDOW and !q_win_bad and log_boost.load(.monotonic) > 1) {
+            log_boost.store(log_boost.load(.monotonic) / 2, .monotonic);
+            logCapFollow();
+            q_win = 0;
+        } else if (q_win >= Q_ADAPT_WINDOW) {
+            if (!q_win_bad and max_queued > Q_ADAPT_MIN) max_queued = @max(max_queued / 2, Q_ADAPT_MIN);
+            q_win = 0;
+            q_win_bad = false;
+        }
+    }
 }
 
 fn handoff() void {
@@ -543,13 +617,20 @@ fn handoff() void {
         }
     }
     if (max_queued == 0) {
-        const e = std.c.getenv("KX_GC_MAX_QUEUED");
-        if (e != null and e.?[0] != 0) {
-            max_queued = @intCast(host.getenv_i64("KX_GC_MAX_QUEUED", Q_ADAPT_START));
+        const qe = host.getenv_i64("KX_GC_MAX_QUEUED", 0);
+        if (qe > 0) {
+            max_queued = @intCast(qe);
             q_fixed = true;
         } else max_queued = Q_ADAPT_START;
+        q_target_ns = host.getenv_i64("KX_GC_TARGET_PAUSE_US", 3000) * 1000;
     }
-    while (q_len > max_queued) waitDone();
+    var d: i64 = 0;
+    if (q_len > max_queued) {
+        const w0 = host.rt_nanos();
+        while (q_len > max_queued) waitDone();
+        d = host.rt_nanos() - w0;
+    }
+    if (!q_fixed) queueAdapt(d);
     obj.PtrStack.moveFrom(&ret_local, &ret_shared);
     m_applied = applied;
     if (cur == null) cur = logNew();
@@ -624,6 +705,7 @@ fn releaseDeadChild(t: ?*anyopaque) callconv(.c) void {
 }
 
 fn releaseChildren(p: *anyopaque) void {
+    c_found += 1;
     if (has(p, STABLE_BIT)) {
         clrBit(p, STABLE_BIT);
         c_stable_n -= 1;
@@ -633,13 +715,14 @@ fn releaseChildren(p: *anyopaque) void {
     c_dying.push(p);
     if (c_releasing) return;
     c_releasing = true;
-    const pm = host.rt_trav_mode;
-    host.rt_trav_mode = kx.TRAV_RELEASE;
+    const tm = coll_tm;
+    const pm = tm.*;
+    tm.* = kx.TRAV_RELEASE;
     while (c_dying.len != 0) {
         const x = c_dying.pop().?;
         if (obj.vtab(x).trav) |trav| trav(x, releaseDeadChild);
     }
-    host.rt_trav_mode = pm;
+    tm.* = pm;
     c_releasing = false;
 }
 
@@ -848,6 +931,7 @@ fn closeSets() void {
     if (cw_ends.len == 0) return;
     const n = cw_m.len;
     const k = cw_ends.len;
+    c_found += @intCast(n);
     const b: *Batch = @ptrCast(@alignCast(host.malloc(@sizeOf(Batch))));
     const mem: [*]?*anyopaque = @ptrCast(@alignCast(host.malloc(n * @sizeOf(?*anyopaque))));
     const ends: [*]usize = @ptrCast(@alignCast(host.malloc(k * @sizeOf(usize))));
@@ -872,10 +956,11 @@ fn validate(id: u64, members: []?*anyopaque) usize {
         }
     }
     if (ok) {
-        const pm = host.rt_trav_mode;
-        host.rt_trav_mode = kx.TRAV_RELEASE;
+        const tm = coll_tm;
+        const pm = tm.*;
+        tm.* = kx.TRAV_RELEASE;
         for (members) |m| if (obj.vtab(m.?).trav) |trav| trav(m.?, freeCycleChild);
-        host.rt_trav_mode = pm;
+        tm.* = pm;
         for (members) |mm| {
             const x = mm.?;
             clrBit(x, CAND_BIT);
@@ -971,10 +1056,13 @@ fn detect(major: bool) void {
         c_work.push(r);
         c_marked.push(r);
     }
+    var visits: i64 = 0;
     while (c_work.len != 0) {
         const x = c_work.pop().?;
+        visits += 1;
         if (obj.vtab(x).trav) |trav| trav(x, mgChild);
     }
+    c_traversed += visits;
     i = 0;
     while (i < roots.len) : (i += 1) c_work.push(roots.at(i).?);
     while (c_work.len != 0) scanOne(c_work.pop().?);
@@ -998,6 +1086,7 @@ fn detect(major: bool) void {
 }
 
 fn flushLiveDef() void {
+    c_after_flush = true;
     var i: usize = 0;
     while (i < c_live_def.len) : (i += 1) {
         const s = c_live_def.at(i).?;
@@ -1036,7 +1125,79 @@ fn publishReturns() void {
     unlock();
 }
 
+const MAJOR_RATIO_MAX: i64 = 256;
+const DEFER_FLUSH_BASE: i64 = 8;
+const DEFER_FLUSH_MAX: usize = 65536;
+const PURE_STABLE_MAX: i64 = 65536;
+var major_ratio: i64 = MAJOR_RATIO;
+var c_after_flush: bool = false;
+/// Objects visited by MarkGray / found dead or in candidate sets (C c_traversed, dbg_dead + dbg_members).
+var c_traversed: i64 = 0;
+var c_found: i64 = 0;
+
+/// One detection plus the C adaptive rules (collector_main), which the port had dropped:
+/// a minor whose trace was mostly live data doubles the root threshold (and with it the log
+/// size); a productive one halves it back; majors and live-root flushes back off the same way.
+fn detectAdaptive(major: bool) void {
+    const nroots: i64 = @intCast(c_roots.len);
+    const m0 = c_found;
+    const w0 = c_traversed;
+    detect(major);
+    gc_st.collections += 1;
+    const found = c_found - m0;
+    const work = c_traversed - w0;
+    if (major) {
+        if (work > 64 * found) {
+            if (major_ratio < MAJOR_RATIO_MAX) major_ratio *= 2;
+        } else major_ratio = MAJOR_RATIO;
+    } else if (work > 4 * found + 2 * nroots) {
+        if (c_threshold < C_MAX_THRESHOLD) c_threshold *= 2;
+    } else if (c_threshold > c_min_threshold) {
+        c_threshold = @max(c_threshold / 2, c_min_threshold);
+    }
+    if (!major and c_after_flush) {
+        c_after_flush = false;
+        if (work > 64 * found) {
+            if (defer_flush < 4096) defer_flush *= 2;
+        } else defer_flush = DEFER_FLUSH_BASE;
+    }
+    if (!major) c_pure = found > 0 and work <= found and c_stable_n < PURE_STABLE_MAX;
+    logCapFollow();
+}
+
+fn sweepList(st: *obj.PtrStack) void {
+    var k: usize = 0;
+    var i: usize = 0;
+    while (i < st.len) : (i += 1) {
+        const s = st.at(i).?;
+        if (has(s, ZOMBIE_BIT)) {
+            clrBit(s, ZOMBIE_BIT);
+            clrBit(s, kx.BUF_BIT);
+            retPush(s);
+        } else {
+            st.set(k, s);
+            k += 1;
+        }
+    }
+    st.len = k;
+}
+
+/// C sweep_deferred: deferred live roots wait for a major, and those that die meanwhile (lru:
+/// evicted entries) are zombies whose memory would wait too; once most of the deferred lists are
+/// zombies, return their memory now. Missing from the port: zombie memory waited for a major.
+fn sweepDeferred() void {
+    sweepList(&c_live_def);
+    sweepList(&c_deferred);
+    c_zombies = 0;
+}
+
+/// The collector thread's own `rt_trav_mode` (thread-local in the runtime). Taken once:
+/// on Darwin every thread-local access is a `_tlv_get_addr` call (~8% of collector time
+/// when it was read and written around each dead object).
+var coll_tm: *c_int = undefined;
+
 fn collectorMain() void {
+    coll_tm = &host.rt_trav_mode;
     lock();
     while (true) {
         while (q_head == null and !full_req and !shutting) waitWork();
@@ -1050,20 +1211,30 @@ fn collectorMain() void {
             while (i < l.frees.len) : (i += 1) host.free(l.frees.at(i));
             l.frees.len = 0;
             applyLog(l);
-            if (c_live_def.len >= 4096 and (@as(i64, @intCast(c_live_def.len)) * defer_flush >= c_stable_n or c_live_def.len >= 65536)) flushLiveDef();
+            if (c_live_def.len >= 4096 and (@as(i64, @intCast(c_live_def.len)) * defer_flush >= c_stable_n or c_live_def.len >= DEFER_FLUSH_MAX)) {
+                flushLiveDef();
+            } else if (c_zombies >= 4096 and c_zombies * 2 >= c_live_def.len + c_deferred.len) {
+                sweepDeferred();
+            }
             const freed = validateReady(l.seq, false);
-            const major_at = MAJOR_RATIO * @max(c_stable_n, @as(i64, @intCast(c_threshold)));
+            const major_at = major_ratio * @max(c_stable_n, @as(i64, @intCast(c_threshold)));
             if (c_roots.len >= c_threshold or @as(i64, @intCast(c_deferred.len)) >= major_at) {
                 const major = @as(i64, @intCast(c_deferred.len)) >= major_at;
-                detect(major);
-                gc_st.collections += 1;
+                detectAdaptive(major);
             }
             gc_st.reclaimed += @intCast(freed);
             publishReturns();
             lock();
             applied = l.seq;
-            l.next = log_pool;
-            log_pool = l;
+            // keep only as many spare logs as the queue may hold again; return the rest after a spike
+            if (pool_len > max_queued + 2) {
+                l.frees.deinit();
+                _ = libc_mm.munmap(@ptrCast(l), @sizeOf(Log));
+            } else {
+                l.next = log_pool;
+                log_pool = l;
+                pool_len += 1;
+            }
             broadcastDone();
         } else if (full_req) {
             unlock();
@@ -1082,22 +1253,53 @@ fn mutReleaseChild(t: ?*anyopaque) callconv(.c) void {
     if (t) |p| if (!isTraced(p)) if (obj.vtab(p).rel) |rel| rel(p);
 }
 
-fn freeReturned(p: *anyopaque) void {
+/// Dead owners of collections (`rt_relo_owner`) with the sequence number of the log that must be
+/// applied before their memory can go: OWNER_MOD and rt_gc_root_hint reach an owner through the
+/// collection, not through a counted reference, so entries naming it can be logged after it died, up
+/// to its relo. Pairs (object, seq). C `m_held` / `free_held`.
+var m_held = obj.PtrStack{};
+
+fn freeHeld(all: bool) void {
+    var k: usize = 0;
+    var i: usize = 0;
+    while (i < m_held.len) : (i += 2) {
+        const p = m_held.at(i).?;
+        const seq: u64 = @intFromPtr(m_held.at(i + 1));
+        if (all or seq <= m_applied) {
+            obj.vtab(p).freemem.?(p);
+        } else {
+            m_held.set(k, p);
+            m_held.set(k + 1, m_held.at(i + 1));
+            k += 2;
+        }
+    }
+    m_held.len = k;
+}
+
+/// `tm` is the calling (mutator) thread's `rt_trav_mode`, looked up once per batch.
+inline fn freeReturned(p: *anyopaque, tm: *c_int) void {
     // C free_returned: one vtab load, unconditional trav/relo/freemem calls.
     const vt = obj.vtab(p);
-    host.rt_trav_mode = kx.TRAV_FREE;
+    tm.* = kx.TRAV_FREE;
     vt.trav.?(p, mutReleaseChild);
-    host.rt_trav_mode = kx.TRAV_SCAN;
+    tm.* = kx.TRAV_SCAN;
     host.rt_relo_owner = 0;
     vt.relo.?(p);
     if (host.rt_relo_owner == 0) {
         vt.freemem.?(p);
+        return;
     }
+    // Was leaked before: the owner's memory is held until every log that may still name it is
+    // applied (entries logged up to now are in the current log, handed next, or in a handed one).
+    m_held.push(p);
+    m_held.push(@ptrFromInt(if (cur != null and cur.?.n != 0) handed + 1 else handed));
 }
 
 fn processReturns() void {
+    if (m_held.len != 0) freeHeld(false);
+    const tm = &host.rt_trav_mode;
     while (ret_pos < ret_local.len) {
-        freeReturned(ret_local.at(ret_pos).?);
+        freeReturned(ret_local.at(ret_pos).?, tm);
         ret_pos += 1;
     }
     ret_local.len = 0;
@@ -1110,8 +1312,9 @@ noinline fn freePaced() void {
     if (ret_pos >= ret_local.len) return;
     const back = ret_local.len - ret_pos;
     var k: usize = if (back > 65536) 16 else if (back > 16384) 8 else if (back > 4096) 4 else 2;
+    const tm = &host.rt_trav_mode;
     while (k > 0 and ret_pos < ret_local.len) : (k -= 1) {
-        freeReturned(ret_local.at(ret_pos).?);
+        freeReturned(ret_local.at(ret_pos).?, tm);
         ret_pos += 1;
     }
     if (ret_pos == ret_local.len) {
@@ -1145,7 +1348,7 @@ inline fn logOp(e: usize) void {
     l.a[n] = e;
     const n1 = n + 1;
     l.n = n1;
-    if (n1 >= log_cap.load(.monotonic)) {
+    if (n1 >= log_lim) {
         @branchHint(.unlikely);
         boundary();
     }
@@ -1235,6 +1438,7 @@ pub export fn rt_gc_collect() void {
         processReturns();
         if (!had and returned == 0 and !(cur != null and (cur.?.n != 0 or cur.?.frees.len != 0))) break;
     }
+    freeHeld(true); // the queue is empty and every handed log applied
     obj.statsAddPause(&gc_st, host.rt_nanos() - t0);
     in_boundary = false;
 }
@@ -1245,6 +1449,19 @@ pub export fn rt_gc_name() [*:0]const u8 {
 pub export fn rt_gc_stats(out: *kx.Stats) void {
     lock();
     out.* = gc_st;
+    if (host.getenv_present("KX_GC_DEBUG")) epochDebug();
     unlock();
 }
+
+fn epochDebug() void {
+    const mib = 1.0 / 1048576.0;
+    _ = std.c.printf("epoch: mem MiB slabs=%.2f logs=%lld(%.2f) stacks(cap) roots=%.2f deferred=%.2f live_def=%.2f work=%.2f black=%.2f marked=%.2f ret=%.2f ret-shared=%.2f ret-local=%.2f cw=%.2f dying=%.2f\n", @as(f64, @floatFromInt(dbg_slab_bytes)) * mib, @as(c_longlong, dbg_log_allocs), @as(f64, @floatFromInt(dbg_log_allocs * @sizeOf(Log))) * mib, capMib(&c_roots), capMib(&c_deferred), capMib(&c_live_def), capMib(&c_work), capMib(&c_black), capMib(&c_marked), capMib(&c_ret), capMib(&ret_shared), capMib(&ret_local), capMib(&cw_m) + capMib(&cw_ends), capMib(&c_dying));
+    _ = std.c.printf("epoch: threshold=%zu log_cap=%zu stable=%lld collections=%lld logs_handed=%llu alloc_cuts=%lld max_queued=%zu\n", c_threshold, log_cap.load(.monotonic), @as(c_longlong, c_stable_n), @as(c_longlong, gc_st.collections), @as(c_ulonglong, handed), @as(c_longlong, dbg_alloc_cuts), max_queued);
+}
+var dbg_alloc_cuts: i64 = 0;
+fn capMib(s: *const obj.PtrStack) f64 {
+    return @as(f64, @floatFromInt(s.cap * 8)) / 1048576.0;
+}
+var dbg_slab_bytes: i64 = 0;
+var dbg_log_allocs: i64 = 0;
 
