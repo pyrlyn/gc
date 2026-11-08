@@ -14,6 +14,9 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const only = b.option([]const u8, "gc", "Collector to build/test (default: all)");
+    const bench_options = b.addOptions();
+    bench_options.addOption(usize, "object_size", b.option(usize, "bench-object-size", "Ops object bytes (minimum 40; default 40)") orelse 40);
+    bench_options.addOption(usize, "live_count", b.option(usize, "bench-live", "Ops live objects (power of two; default 65536)") orelse 65536);
 
     const kxgc = b.addModule("kxgc", .{ .root_source_file = b.path("src/kxgc.zig") });
     const host = b.addModule("host", .{
@@ -95,6 +98,7 @@ pub fn build(b: *std.Build) void {
             }),
         });
         ops.lto = ops_lto;
+        ops.root_module.addOptions("bench_options", bench_options);
         b.installArtifact(ops);
 
         const run_ops = b.addRunArtifact(ops);

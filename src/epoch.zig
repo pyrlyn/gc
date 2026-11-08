@@ -17,7 +17,26 @@ pub const caps = .{ .cycles = true, .precise = true, .asan = true, .deferred = t
 const PAGE_SHIFT = 16;
 const PAGE: usize = 1 << PAGE_SHIFT;
 const PAGE_BITS_LOG = 31;
-const CLASSES = 32;
+// Keep at least sixteen objects in a 64 KiB slab. Previously every object
+// above 256 bytes took a whole 64 KiB block, including ordinary 512-byte nodes.
+// Preserve 8-byte classes through 256 bytes; use 64-byte steps above that to
+// keep the hot allocator tables small (92 classes rather than 512).
+const SMALL_CLASSES = 32;
+const SMALL_MAX = SMALL_CLASSES * 8;
+const MEDIUM_SHIFT = 6;
+const MEDIUM_QUANTUM = 1 << MEDIUM_SHIFT;
+const CLASSES = SMALL_CLASSES + (PAGE / 16 - SMALL_MAX) / MEDIUM_QUANTUM;
+
+inline fn sizeClass(size: i64) usize {
+    const n: usize = @intCast(size);
+    if (n <= SMALL_MAX) return (n + 7) >> 3;
+    return SMALL_CLASSES + ((n - SMALL_MAX + MEDIUM_QUANTUM - 1) >> MEDIUM_SHIFT);
+}
+
+inline fn classBytes(cls: usize) usize {
+    if (cls <= SMALL_CLASSES) return cls << 3;
+    return SMALL_MAX + ((cls - SMALL_CLASSES) << MEDIUM_SHIFT);
+}
 const LOG_CAP = 32768;
 const LOG_MIN = 2048;
 const LOG_PER_ROOT = 4;
@@ -208,7 +227,7 @@ noinline fn slabRefill(cls: usize) *anyopaque {
         slab.free = next.*;
     } else {
         p = @ptrCast(slab.bump);
-        slab.bump += cls << 3;
+        slab.bump += classBytes(cls);
     }
     slab.live += 1;
     return p;
@@ -226,7 +245,7 @@ inline fn slabAlloc(cls: usize) *anyopaque {
             slab.live += 1;
             return free_cell;
         }
-        const next_bump = slab.bump + (cls << 3);
+        const next_bump = slab.bump + classBytes(cls);
         if (@intFromPtr(next_bump) <= @intFromPtr(slab.base) + PAGE) {
             const p: *anyopaque = @ptrCast(slab.bump);
             slab.bump = next_bump;
@@ -357,7 +376,7 @@ noinline fn allocNoSlab(cls: usize) *anyopaque {
         free_list[cls] = next.*;
         return p;
     }
-    const need = cls << 3;
+    const need = classBytes(cls);
     if (bump == null or @intFromPtr(bump.?) + need > @intFromPtr(bump_end)) {
         const slab: [*]u8 = @ptrCast(pageAlloc(PAGE));
         bump = slab;
@@ -390,7 +409,7 @@ pub inline fn allocTrace(size: i64) ?*anyopaque {
         @branchHint(.unlikely);
         allocCut();
     }
-    const cls = (@as(usize, @intCast(size)) + 7) >> 3;
+    const cls = sizeClass(size);
     if (cls > CLASSES) {
         @branchHint(.unlikely);
         return allocBig(size);
@@ -409,7 +428,7 @@ pub export fn rt_alloc_trace(size: i64) ?*anyopaque {
 
 pub inline fn freeTrace(p: ?*anyopaque, size: i64) void {
     const q = p orelse return;
-    const cls = (@as(usize, @intCast(size)) + 7) >> 3;
+    const cls = sizeClass(size);
     if (cls > CLASSES) {
         const bytes = (@as(usize, @intCast(size)) + PAGE - 1) & ~@as(usize, PAGE - 1);
         const b: *Big = @ptrCast(@alignCast(q));
@@ -1464,4 +1483,3 @@ fn capMib(s: *const obj.PtrStack) f64 {
 }
 var dbg_slab_bytes: i64 = 0;
 var dbg_log_allocs: i64 = 0;
-
