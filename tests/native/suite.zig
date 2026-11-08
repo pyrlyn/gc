@@ -274,6 +274,67 @@ fn apiDeferred() void {
     check(freed == 3, "last logged release");
 }
 
+// Exercise the slab/large-block boundary with real deferred reclamation, including
+// live payloads, unreachable cycles, and reuse across different size classes.
+const Sized = extern struct {
+    hdr: u64,
+    vt: *kx.VTab,
+    next: ?*Sized,
+    bytes: usize,
+    marker: u64,
+};
+var sized_freed: usize = 0;
+fn sizedTrav(p: ?*anyopaque, visit: ?kx.VisitFn) callconv(.c) void {
+    const s: *Sized = @ptrCast(@alignCast(p.?));
+    visit.?(s.next);
+}
+fn sizedRelo(p: ?*anyopaque) callconv(.c) void {
+    const s: *Sized = @ptrCast(@alignCast(p.?));
+    const bytes: [*]u8 = @ptrCast(s);
+    var intact = s.marker == 0xdeadbeef;
+    for (bytes[@sizeOf(Sized)..s.bytes]) |b| intact = intact and b == 0xa5;
+    check(intact, "sized object payload survives collection");
+}
+fn sizedFree(p: ?*anyopaque) callconv(.c) void {
+    const s: *Sized = @ptrCast(@alignCast(p.?));
+    const size = s.bytes;
+    sized_freed += 1;
+    gc.rt_free_trace(p, @intCast(size));
+}
+var sized_vt: kx.VTab = .{ .rel = null, .trav = sizedTrav, .relo = sizedRelo, .freemem = sizedFree, .cyclic = @ptrFromInt(1) };
+
+fn deferredSizes() void {
+    if (!gc.caps.deferred) return;
+    const sizes = [_]usize{ 40, 248, 256, 257, 264, 511, 512, 513, 1024, 2048, 4095, 4096, 4097, 65536, 65537 };
+    var ring: [128]*Sized = undefined;
+    var expected: usize = 0;
+    sized_freed = 0;
+    for (0..3) |_| {
+        for (sizes) |size| {
+            for (&ring) |*slot| {
+                const s: *Sized = @ptrCast(@alignCast(gc.rt_alloc_trace(@intCast(size)).?));
+                s.* = .{ .hdr = 2, .vt = &sized_vt, .next = null, .bytes = size, .marker = 0xdeadbeef };
+                const bytes: [*]u8 = @ptrCast(s);
+                @memset(bytes[@sizeOf(Sized)..size], 0xa5);
+                slot.* = s;
+            }
+            for (ring, 0..) |s, i| {
+                @atomicStore(?*Sized, &s.next, ring[(i + 1) % ring.len], .release);
+                gc.rt_gc_write_barrier(s);
+            }
+            // Leave one outside reference; the entire ring must remain live.
+            for (ring[1..]) |s| gc.rt_gc_log_dec(s);
+            gc.rt_gc_collect();
+            check(sized_freed == expected, "sized reachable ring survives");
+            for (ring) |s| sizedRelo(s);
+            gc.rt_gc_log_dec(ring[0]);
+            gc.rt_gc_collect();
+            expected += ring.len;
+            check(sized_freed == expected, "sized garbage ring reclaimed exactly once");
+        }
+    }
+}
+
 const FANOUT = 64;
 const Node = extern struct {
     hdr: u64,
@@ -419,6 +480,7 @@ pub fn main() u8 {
     storageHooks();
     if (gc.caps.deferred) {
         apiDeferred();
+        deferredSizes();
     } else {
         acyclicChain();
         sharedSurvives();

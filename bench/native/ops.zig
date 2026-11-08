@@ -3,6 +3,7 @@ const std = @import("std");
 const gc = @import("collector");
 const kx = @import("kxgc");
 const host = @import("host");
+const options = @import("bench_options");
 
 const Obj = extern struct {
     hdr: u64,
@@ -12,6 +13,12 @@ const Obj = extern struct {
     val: i64,
 };
 
+comptime {
+    if (options.object_size < @sizeOf(Obj)) @compileError("bench-object-size must be at least 40");
+    if (options.live_count == 0 or options.live_count & (options.live_count - 1) != 0)
+        @compileError("bench-live must be a nonzero power of two");
+}
+
 var sink: i64 = 0;
 var head: ?*Obj = null;
 var tail: ?*Obj = null;
@@ -19,7 +26,7 @@ var tail: ?*Obj = null;
 fn objFree(p: ?*anyopaque) callconv(.c) void {
     // Inline freeTrace (not the export) so Darwin no-LTO matches C LTO of
     // `obj_free` → `rt_free_trace` → `slab_free`.
-    gc.freeTrace(p, @sizeOf(Obj));
+    gc.freeTrace(p, options.object_size);
 }
 fn objTrav(p: ?*anyopaque, f: ?kx.VisitFn) callconv(.c) void {
     const o: *Obj = @ptrCast(@alignCast(p));
@@ -98,12 +105,17 @@ inline fn storePrev(o: *Obj, v: ?*Obj) void {
 inline fn newObj(v: i64) *Obj {
     // C new_obj: field stores, no struct-wide write. allocTrace never returns
     // null (OOM panics), matching `Obj *o = rt_alloc_trace(sizeof(Obj))`.
-    const o: *Obj = @ptrCast(@alignCast(gc.allocTrace(@sizeOf(Obj)).?));
+    const o: *Obj = @ptrCast(@alignCast(gc.allocTrace(options.object_size).?));
     o.hdr = 1;
     o.vt = &vt;
     o.prev = null;
     o.next = null;
     o.val = v;
+    // Touch the requested payload so RSS includes live object storage at every size.
+    if (comptime options.object_size > @sizeOf(Obj)) {
+        const bytes: [*]u8 = @ptrCast(o);
+        @memset(bytes[@sizeOf(Obj)..options.object_size], @truncate(@as(u64, @bitCast(v))));
+    }
     return o;
 }
 
@@ -200,7 +212,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const argv = init.args.vector;
     const n: i64 = if (argv.len > 1) try parseI64(argv[1]) else 4_000_000;
     const only: ?[]const u8 = if (argv.len > 2) std.mem.span(argv[2]) else null;
-    const nl: usize = 1 << 16;
+    const nl: usize = options.live_count;
     const live_raw = gc.rt_gc_mem_alloc(@sizeOf(?*Obj) * nl).?;
     const live: []?*Obj = @as([*]?*Obj, @ptrCast(@alignCast(live_raw)))[0..nl];
     var i: usize = 0;

@@ -1,0 +1,102 @@
+[
+  {
+    "round": 0,
+    "variant": "baseline",
+    "rc_pair": 2.5,
+    "field_store": 3.85,
+    "alloc_drop": 9.85,
+    "lru_move": 47.17,
+    "pause_ms": 316.7,
+    "peak_rss_kb": 6688.0
+  },
+  {
+    "round": 0,
+    "variant": "compact",
+    "rc_pair": 3.51,
+    "field_store": 8.76,
+    "alloc_drop": 10.83,
+    "lru_move": 49.73,
+    "pause_ms": 339.5,
+    "peak_rss_kb": 6880.0
+  },
+  {
+    "round": 1,
+    "variant": "compact",
+    "rc_pair": 2.54,
+    "field_store": 3.97,
+    "alloc_drop": 9.89,
+    "lru_move": 51.43,
+    "pause_ms": 263.2,
+    "peak_rss_kb": 6656.0
+  },
+  {
+    "round": 1,
+    "variant": "baseline",
+    "rc_pair": 2.58,
+    "field_store": 3.83,
+    "alloc_drop": 10.31,
+    "lru_move": 55.51,
+    "pause_ms": 278.8,
+    "peak_rss_kb": 6640.0
+  },
+  {
+    "round": 2,
+    "variant": "baseline",
+    "rc_pair": 2.45,
+    "field_store": 3.88,
+    "alloc_drop": 10.24,
+    "lru_move": 44.97,
+    "pause_ms": 246.3,
+    "peak_rss_kb": 6704.0
+  },
+  {
+    "round": 2,
+    "variant": "compact",
+    "rc_pair": 2.49,
+    "field_store": 3.89,
+    "alloc_drop": 9.87,
+    "lru_move": 54.74,
+    "pause_ms": 266.4,
+    "peak_rss_kb": 6640.0
+  },
+  {
+    "round": 3,
+    "variant": "compact",
+    "rc_pair": 2.45,
+    "field_store": 3.84,
+    "alloc_drop": 10.29,
+    "lru_move": 55.25,
+    "pause_ms": 269.3,
+    "peak_rss_kb": 6656.0
+  },
+  {
+    "round": 3,
+    "variant": "baseline",
+    "rc_pair": 2.44,
+    "field_store": 3.97,
+    "alloc_drop": 9.86,
+    "lru_move": 49.55,
+    "pause_ms": 299.2,
+    "peak_rss_kb": 6688.0
+  },
+  {
+    "round": 4,
+    "variant": "baseline",
+    "rc_pair": 2.56,
+    "field_store": 3.88,
+    "alloc_drop": 10.45,
+    "lru_move": 68.2,
+    "pause_ms": 289.4,
+    "peak_rss_kb": 6736.0
+  },
+  {
+    "round": 4,
+    "variant": "compact",
+    "rc_pair": 3.25,
+    "field_store": 4.34,
+    "alloc_drop": 10.46,
+    "lru_move": 47.49,
+    "pause_ms": 353.2,
+    "peak_rss_kb": 6880.0
+  }
+]
