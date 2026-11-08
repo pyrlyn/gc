@@ -412,6 +412,37 @@ fn onePass() void {
     check(local_freed == ROOTS and (ring[0].hdr & kx.CNT_MASK) == 2 and trav_calls <= MAX_TRAV, "one_pass");
 }
 
+/// tests/incremental/slice_black.kt without newkotlinc: a later slice's root that a bounded step
+/// scans black is live and leaves the buffer at the end of the step, so its release later frees it
+/// exactly once (left BLACK in the buffer, a step started mid-release would free it as dead).
+fn sliceBlackRoot() void {
+    if (!@hasDecl(gc, "debugSetFixedSlice")) return;
+    gc.rt_gc_collect();
+    gc.debugSetFixedSlice(1);
+    defer gc.debugSetFixedSlice(0);
+    freed = 0;
+    const x = newObj(3);
+    const r = newObj(2);
+    r.next = x;
+    x.hdr += 1; // x: local + r
+    const a = newObj(1);
+    a.next = r; // r: a only
+    a.hdr += 1; // a: live with count 2
+    gc.rt_cc_possible_root(a);
+    r.hdr += 1;
+    objRel(r); // back to 1: r is the second buffered root
+    check(gc.rt_gc_idle_step(1_000_000) == 0, "one-slice step drops the live black root");
+    check(!gc.debugIsBuffered(r) and gc.debugColor(r) == kx.BLACK and countOf(r) == 1 and freed == 0, "slice-black root restored, unbuffered");
+    a.next = null;
+    objRel(r);
+    check(freed == 1, "slice-black root freed once");
+    objRel(a);
+    objRel(a);
+    objRel(x);
+    gc.rt_gc_collect();
+    check(freed == 3, "slice-black cleanup");
+}
+
 pub fn main() u8 {
     const gname = std.mem.span(gc.rt_gc_name());
     std.debug.print("gc={s}\n", .{gname});
@@ -430,7 +461,10 @@ pub fn main() u8 {
         if (std.mem.eql(u8, gname, "perceus") or std.mem.eql(u8, gname, "incremental")) {
             traversal(4096);
         }
-        if (std.mem.eql(u8, gname, "incremental")) onePass();
+        if (std.mem.eql(u8, gname, "incremental")) {
+            onePass();
+            sliceBlackRoot();
+        }
     }
     var st: kx.Stats = undefined;
     gc.rt_gc_stats(&st);
