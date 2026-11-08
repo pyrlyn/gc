@@ -18,7 +18,10 @@ pub fn TrialDeletion(comptime claim_skips_buffered: bool) type {
         threshold: usize = CC_THRESHOLD,
 
         /// C visitors close over file-scope stacks; Zig visitors are C pointers.
-        pub threadlocal var current: ?*Self = null;
+        /// A plain global like C's statics (the synchronous collectors run on the mutator
+        /// and are not reentrant across threads); `threadlocal` cost a `_tlv_get_addr`
+        /// call per visited edge on Darwin.
+        pub var current: ?*Self = null;
 
         pub fn activate(self: *Self) void {
             current = self;

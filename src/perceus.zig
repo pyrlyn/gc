@@ -46,6 +46,12 @@ pub export fn rt_gc_mem_free(p: ?*anyopaque) void {
 }
 
 pub export fn rt_cc_possible_root(p: ?*anyopaque) void {
+    // Out of line like C's separate translation unit: once `PtrStack.push` became small this
+    // got inlined into release paths, giving every release a stack frame (+30% on rc_pair).
+    @call(.never_inline, possibleRoot, .{p});
+}
+
+fn possibleRoot(p: ?*anyopaque) void {
     const o = p orelse return;
     obj.setColor(o, obj.PURPLE);
     if (obj.isBuffered(o)) return;
