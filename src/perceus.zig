@@ -68,10 +68,12 @@ pub export fn rt_cc_dead(p: ?*anyopaque) void {
     }
 }
 
-fn markRoots(roots: *obj.PtrStack) usize {
+/// Compacts the live purple roots of `roots[0..n)` to the front. Freeing a root can buffer new roots,
+/// which `possibleRoot` appends after `n` (and may move `roots.items`).
+fn markRoots(roots: *obj.PtrStack, n: usize) usize {
     var kept: usize = 0;
     var i: usize = 0;
-    while (i < roots.len) : (i += 1) {
+    while (i < n) : (i += 1) {
         const root = roots.at(i).?;
         if (obj.color(root) == obj.PURPLE and obj.refCount(root) > 0) {
             td.markGray(root);
@@ -108,21 +110,34 @@ fn collectCycles() void {
     if (cc_running or cc_roots.len == 0) return;
     cc_running = true;
     const start = host.rt_nanos();
-    var roots = cc_roots;
-    cc_roots = .{};
+    // This collection's roots are cc_roots[0..n). Roots buffered while it runs are appended after
+    // them and kept for the next one, in the same buffer. C moves them to a fresh buffer, which then
+    // regrew from its initial capacity to the threshold (a realloc and copy per doubling) every time.
+    const roots = &cc_roots;
+    const n = roots.len;
     td.traced = 0;
     td.activate();
-    roots.len = markRoots(&roots);
+    const kept = markRoots(roots, n);
     var i: usize = 0;
-    while (i < roots.len) : (i += 1) td.scan(roots.at(i).?);
+    while (i < kept) : (i += 1) td.scan(roots.at(i).?);
     i = 0;
-    while (i < roots.len) : (i += 1) {
+    while (i < kept) : (i += 1) {
         obj.clearBuffered(roots.at(i).?);
         td.collectWhite(roots.at(i).?);
     }
     const reclaimed = freeGarbage();
-    roots.deinit();
+    const late = roots.len - n;
+    @memmove(roots.items[0..late], roots.items[n..roots.len]);
+    roots.len = late;
     td.adaptThreshold(reclaimed);
+    // A drain (no collection while it runs) or a threshold since lowered can leave the buffer far
+    // larger than the next collection needs: free it, as C does after every collection.
+    if (roots.cap > 2 * @max(td.threshold, late) + obj.PTR_STACK_INITIAL_CAPACITY) {
+        var fresh = obj.PtrStack{};
+        for (roots.items[0..late]) |r| fresh.push(r);
+        roots.deinit();
+        roots.* = fresh;
+    }
     gc_stats.collections += 1;
     gc_stats.reclaimed += @intCast(reclaimed);
     obj.statsAddPause(&gc_stats, host.rt_nanos() - start);
@@ -190,3 +205,4 @@ pub fn debugInitialCap() usize {
 pub fn debugRootsLen() usize {
     return cc_roots.len;
 }
+pub const debugPoolPages = regions.debugPoolPages;

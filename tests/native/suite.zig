@@ -504,11 +504,73 @@ fn sliceBlackRoot() void {
     check(freed == 3, "slice-black cleanup");
 }
 
+/// regions.zig pool: a page whose last block is freed goes to a stock that other size classes take
+/// pages from, never a page that still holds a live block; the free blocks of a page that does
+/// serve its own class again.
+fn poolCompaction() void {
+    if (!@hasDecl(gc, "debugPoolPages")) return;
+    const N = 20000; // 56-byte blocks: about 70 pages of class 7, which no other test uses
+    const PIN = 1024; // every PIN-th block stays live: 20 pinned pages, about 50 emptied ones
+    const PINNED = (N + PIN - 1) / PIN;
+    const HDR = 32; // page header
+    const blocks = std.heap.page_allocator.alloc([*]u64, N) catch {
+        fails += 1;
+        return;
+    };
+    defer std.heap.page_allocator.free(blocks);
+    for (blocks, 0..) |*b, i| {
+        b.* = @ptrCast(@alignCast(gc.rt_alloc_trace(56).?));
+        @memset(b.*[0..7], i);
+    }
+    for (blocks, 0..) |b, i| if (i % PIN != 0) gc.rt_free_trace(b, 56);
+    const pages = gc.debugPoolPages();
+    // 40 pages of 120-byte blocks (class 15, also unused elsewhere) come from the emptied ones.
+    const other = std.heap.page_allocator.alloc([*]u8, 40 * (((16 << 10) - HDR) / 120)) catch {
+        fails += 1;
+        return;
+    };
+    defer std.heap.page_allocator.free(other);
+    for (other) |*o| {
+        o.* = @ptrCast(gc.rt_alloc_trace(120).?);
+        @memset(o.*[0..120], 0xee);
+    }
+    // A walk of the free lists finds the emptied pages once enough was handed out since the last one
+    // began, and sorts them 4096 blocks per page taken (regions.zig WALK_GAP, WALK_STEP): a few pages
+    // of 120-byte blocks may come from the system first.
+    check(gc.debugPoolPages() <= pages + 8, "another size class reuses emptied pages");
+    const after_other = gc.debugPoolPages();
+    // Every free block of the pinned pages: more than the 8 emptied pages left can hold.
+    const again = std.heap.page_allocator.alloc([*]u64, PINNED * (((16 << 10) - HDR) / 56 - 1)) catch {
+        fails += 1;
+        return;
+    };
+    defer std.heap.page_allocator.free(again);
+    for (again, 0..) |*b, i| {
+        b.* = @ptrCast(@alignCast(gc.rt_alloc_trace(56).?));
+        @memset(b.*[0..7], ~i);
+    }
+    check(gc.debugPoolPages() == after_other, "a size class reuses the free blocks of its pinned pages");
+    var intact = true;
+    var i: usize = 0;
+    while (i < N) : (i += PIN) {
+        for (blocks[i][0..7]) |w| intact = intact and w == i;
+    }
+    for (again, 0..) |b, k| {
+        for (b[0..7]) |w| intact = intact and w == ~k;
+    }
+    check(intact, "pinned pages keep their live blocks");
+    for (again) |b| gc.rt_free_trace(b, 56);
+    for (other) |o| gc.rt_free_trace(o, 120);
+    i = 0;
+    while (i < N) : (i += PIN) gc.rt_free_trace(blocks[i], 56);
+}
+
 pub fn main() u8 {
     const gname = std.mem.span(gc.rt_gc_name());
     std.debug.print("gc={s}\n", .{gname});
     acyclicAlloc();
     storageHooks();
+    poolCompaction();
     if (gc.caps.deferred) {
         apiDeferred();
         deferredSizes();

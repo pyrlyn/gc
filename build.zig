@@ -45,6 +45,14 @@ pub fn build(b: *std.Build) void {
     // wasm32-wasi (Node/Bun/Deno/browser via scripts/wasm/run.mjs) is single-threaded: no pthreads,
     // so `epoch` (background collector threads) is not built there.
     const is_wasm = target.result.cpu.arch.isWasm();
+    // The shadow stack sits at the bottom of linear memory, so its whole size is resident memory of
+    // every wasm instance. Zig's default is 16 MiB; the collectors use explicit work stacks. Optimized
+    // tests and benches peak under 32 KiB of it, the Debug test suite near 180 KiB (suite.zig `objRel`
+    // recurses down a 1000-object chain), so keep at least 256 KiB for Debug. Overflowing it traps
+    // (stack-first layout).
+    const wasm_stack = b.option(u64, "wasm-stack-size", "wasm shadow stack bytes (default 1 MiB)") orelse 1 << 20;
+    // DWARF is ~94% of an optimized wasm module (1.2 MiB of 1.3 MiB) and engines keep the module bytes.
+    const strip_opt = b.option(bool, "strip", "Strip debug info (default: optimized wasm builds)");
 
     for (all_gcs) |g| {
         if (only) |want| if (!std.mem.eql(u8, want, g)) continue;
@@ -66,6 +74,7 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = optimize,
                 .link_libc = true,
+                .strip = if (strip_opt) |v| v else if (is_wasm and optimize != .debug) true else null,
                 .imports = &.{
                     .{ .name = "collector", .module = coll },
                     .{ .name = "kxgc", .module = kxgc },
@@ -73,6 +82,7 @@ pub fn build(b: *std.Build) void {
                 },
             }),
         });
+        if (is_wasm) suite.stack_size = wasm_stack;
         b.installArtifact(suite);
 
         const run = b.addRunArtifact(suite);
@@ -95,6 +105,7 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = bench_opt,
                 .link_libc = true,
+                .strip = if (strip_opt) |v| v else if (is_wasm) true else null,
                 .imports = &.{
                     .{ .name = "collector", .module = bcoll },
                     .{ .name = "kxgc", .module = kxgc },
@@ -103,6 +114,7 @@ pub fn build(b: *std.Build) void {
             }),
         });
         ops.lto = ops_lto;
+        if (is_wasm) ops.stack_size = wasm_stack;
         ops.root_module.addOptions("bench_options", bench_options);
         b.installArtifact(ops);
 
@@ -111,22 +123,28 @@ pub fn build(b: *std.Build) void {
         run_ops.has_side_effects = true;
         bench_step.dependOn(&run_ops.step);
 
-        // Cycle-collector workload (perceus / incremental); epoch and rc print "skipped".
-        const cycles = b.addExecutable(.{
-            .name = b.fmt("gc-cycles-{s}", .{g}),
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("bench/native/cycles.zig"),
-                .target = target,
-                .optimize = bench_opt,
-                .link_libc = true,
-                .imports = &.{
-                    .{ .name = "collector", .module = bcoll },
-                    .{ .name = "kxgc", .module = kxgc },
-                    .{ .name = "host", .module = host_fast },
-                },
-            }),
-        });
-        cycles.lto = ops_lto;
-        b.installArtifact(cycles);
+        // Cycle-collector workload (perceus / incremental; epoch and rc print "skipped"), and size-class
+        // phases (peak memory when memory freed by one size class must serve the next), and random churn
+        // (free and replace objects in random order).
+        for ([_][]const u8{ "cycles", "phases", "churn" }) |bench| {
+            const exe = b.addExecutable(.{
+                .name = b.fmt("gc-{s}-{s}", .{ bench, g }),
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path(b.fmt("bench/native/{s}.zig", .{bench})),
+                    .target = target,
+                    .optimize = bench_opt,
+                    .link_libc = true,
+                    .strip = if (strip_opt) |v| v else if (is_wasm) true else null,
+                    .imports = &.{
+                        .{ .name = "collector", .module = bcoll },
+                        .{ .name = "kxgc", .module = kxgc },
+                        .{ .name = "host", .module = host_fast },
+                    },
+                }),
+            });
+            exe.lto = ops_lto;
+            if (is_wasm) exe.stack_size = wasm_stack;
+            b.installArtifact(exe);
+        }
     }
 }

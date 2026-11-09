@@ -15,6 +15,8 @@ src/{rc,perceus,incremental,epoch}.zig
 tests/native/suite.zig       gc_unit + api_test + traversal + one_pass
 bench/native/ops.zig         port of bench/ops/ops.c
 bench/native/cycles.zig      cycle-collector workload (perceus / incremental), native and wasm
+bench/native/phases.zig      size-class phases: memory one size class frees, reused by the next
+bench/native/churn.zig       random free-and-replace of live objects (LRU-cache-like)
 scripts/wasm/                plain-JS WASI host: runs the wasm32-wasi binaries in Node/Bun/Deno/browser
 build.zig                    zig build test / zig build bench
 scripts/macos/               local Mac C + Zig 0.17.1 commands
@@ -63,7 +65,7 @@ Paired Mac numbers for SHA `31bdbcf` live on the runner at
 |---|---|
 | `kxgc.h` types / C ABI exports | yes |
 | `common/object.inc` | yes |
-| `common/regions.inc` (non-`RT_LEAKCHECK` path) | yes |
+| `common/regions.inc` (non-`RT_LEAKCHECK` path) | yes, with another pool (see below) |
 | `common/trial_deletion.inc` | yes |
 | `rc/gc.c` | yes |
 | `perceus/gc.c` | yes |
@@ -138,6 +140,104 @@ Known limits:
   is 22% higher than base because the backlog can reach the cap before a one-pass step.
 - wasm `shared_20k` has a single max pause well above its p99.
 
+## Pool
+
+`src/common/regions.zig` keeps C's region API (`rt_alloc_trace` / `rt_free_trace`, 8-byte size
+classes up to 256 bytes, larger objects from malloc) but not C's pool. C bump-allocates every size
+class from one shared 64 KiB slab and reuses a freed block only for its own class, so memory freed
+by one class never serves another: a program that frees many 40-byte objects and then allocates
+64-byte ones keeps both peaks.
+
+Compaction here does not move objects. `kxgc.h` visitors receive child values, not field
+addresses, and generated code holds raw pointers, so an object can never be relocated. Instead:
+
+- **Single-class pages.** Each 16 KiB page holds blocks of one class after a 32-byte header, and
+  is aligned to its size, so a block finds its page by masking its address.
+- **Fast paths unchanged.** Allocation is still C's free-list pop or bump, and a free is C's push
+  onto the class's free list. Neither touches a page header.
+- **Lazy reclaim.** When a class needs a page and the stock is empty, a walk of the free lists
+  starts. It goes through one class at a time and sorts its blocks by page, at most 4096 blocks
+  per page taken, so no single allocation sorts a whole heap. A page whose blocks are all free
+  leaves its list for a stock that every class, and both pools, take pages from; the rest go back
+  grouped by page. A class whose list is unchanged since its last walk is skipped. While its list
+  is being walked, a class allocates from the blocks the walk has not reached yet.
+  The next walk waits until the pages handed out since the last one began exceed, by 64 KiB, the
+  bytes that walk left on the lists (a page the stock gives back to the class that emptied it
+  counts as left), so walking costs at most one block per 8 bytes allocated.
+
+Memory is never returned to the system, as in C.
+
+A first version counted live blocks on every free, as the epoch collector's slabs do. Freeing a
+block outside the current page then touched that page's header, and the next allocation switched
+to it. Freeing and replacing objects in random order, as an LRU cache does, was 3-8 times slower
+than C's pool natively and 1.8 times slower in wasm. `bench/native/churn.zig` measures that case.
+
+The walk's cost shows when one class frees many small blocks in random order and another then
+allocates: 1M 16-byte blocks freed shuffled, then 100K 200-byte objects, five times, takes about
+1.2 times C's time natively (in allocation order, under 2 times), and one page take can sort 4096
+scattered blocks, a few hundred microseconds. In exchange the 200-byte objects reuse the 16-byte
+pages: peak RSS 108 MB instead of 124 MB. With one 16-byte survivor in every 64 blocks (pages
+that never empty) followed by six size classes in turn, peak RSS is 55 MB instead of 102 MB.
+
+Pages come from the system in chunks. Natively, a chunk is a 1 MiB `page_allocator` mapping that
+becomes resident as its pages are used. On wasm, a chunk is a `memory.grow` of an eighth of the
+pages carved so far, from 64 KiB up to 1 MiB. Through malloc, C's 64 KiB slab was a 128 KiB block
+(the allocator's 16-byte header), and once JS has read `memory.buffer`, every grow costs about
+4-90 µs under V8 and about 1 ms under Bun.
+
+On wasm the RC region (`rt_alloc`) also has a pool, as with C's `RT_POOL`, instead of libc malloc,
+which rounds every block to a power of two (a 40-byte object took a 64-byte slot). Natively it
+stays libc malloc.
+
+The free stays as small as C's for another reason too: V8 inlines a wasm function into its caller
+only within a budget of about three times the caller's size. With the counting free inlined into
+release functions, V8 inlined `objRel` at 4 of 8 call sites in `gc-ops lru_move` instead of 6, and
+perceus and incremental were 40-65% slower under Node, Deno and Bun.
+
+The compiler must also be able to tell the pools apart from objects. A pointer to a pool or to
+one of its classes stored in memory (a table of pools, the class a walk is in), a block made from
+an integer address, or a block returned by an out-of-line call may, as far as LLVM knows, point
+into a pool. Every object store on the inlined fast paths then forces the free-list head to be
+reloaded, and an allocation after a free was no longer folded away (`churn` at 1M live objects ran
+1.4 times slower natively). The walk therefore keeps classes as indexes, the bump range is held as
+pointers, and `refill` returns nothing: the caller pops or bumps again.
+
+Workload: `bench/native/phases.zig` (`gc-phases-<gc> [live] [rounds] [keep_every]`) allocates
+`live` objects of one size (40 to 256 bytes), frees them, and moves on to the next size.
+`keep_every=K` keeps every K-th object alive, pinning its page. `bench/native/churn.zig`
+(`gc-churn-<gc> [live] [iters]`) keeps `live` 40-byte objects and replaces a random one `iters`
+times, allocating the replacement before freeing the old object (in the other order LLVM folds
+the free and the allocation into nothing, and the bench measured no allocator at all).
+
+### Results
+
+HEAD (`2a1217d`) → this tree, medians of interleaved runs (5 native, 3 per JS engine), Apple
+Silicon under heavy unrelated load (load average 70-100), so differences under about 15% are
+noise. wasm peak RSS is the size of linear memory. Time in ns per object, op or cycle. Churn ran
+5M iterations, in the order described above for both sides.
+
+| bench | native | Node | Bun | Deno |
+|---|---|---|---|---|
+| phases rc, time | 17.5 → 21.4 | 40.8 → 24.6 | 24.4 → 30.6 | 46.8 → 26.2 |
+| phases rc, peak MB | 77.7 → 34.2 | 166 → 34.3 | 166 → 34.3 | 166 → 34.3 |
+| churn perceus, live 64K | 2.69 → 3.01 | 9.44 → 11.2 | 4.12 → 5.12 | 9.53 → 9.99 |
+| churn perceus, live 1M | 13.0 → 15.3 | 52.0 → 60.2 | 13.0 → 13.7 | 51.1 → 57.0 |
+| churn, live 1M, peak MB | 50.0 → 50.0 | 104 → 49.7 | 104 → 49.7 | 104 → 49.7 |
+| cycles incremental garbage | 49.3 → 52.4 | 87.6 → 93.4 | 116 → 92.4 | 98.7 → 88.7 |
+| cycles incremental, peak MB | 3.0 → 3.0 | 18.3 → 2.4 | 18.3 → 2.4 | 18.3 → 2.4 |
+| ops perceus lru_move | 36.9 → 38.7 | 41.5 → 41.9 | 40.9 → 26.9 | 29.4 → 28.3 |
+| ops rc rc_pair | 1.34 → 1.51 | 4.00 → 3.21 | 2.71 → 2.92 | 3.26 → 3.00 |
+| ops rc, peak MB | 4.9 → 4.9 | 21.8 → 4.4 | 21.8 → 4.4 | 21.8 → 4.4 |
+
+Memory: wasm instances are 4-7 times smaller on small heaps (most of it the shadow stack, 16 MiB →
+1 MiB), and half the size when the heap is large or moves between size classes. Time: phases is
+1.7-1.9 times faster under Node and Deno, whose `memory.grow` HEAD hit for every 64 KiB slab, and
+10-25% slower natively and under Bun, the cost of sorting each freed class's blocks by page.
+Random churn is 5-15% slower everywhere. In HEAD's churn loop LLVM keeps the free-list head in a
+register (the loop's only call is malloc, which cannot touch the pool); here the loop also calls
+`refill`, which writes it. The rest of `gc-ops` and the perceus and shared_1k cycles are unchanged
+within noise. epoch does not use this pool; its numbers moved in both directions between runs.
+
 ## wasm32-wasi / JS
 
 ```sh
@@ -154,6 +254,26 @@ node scripts/wasm/run.mjs zig-out-wasm/bin/gc-cycles-incremental.wasm 1000000 sh
   `CLOCK_MONOTONIC` is a pointer, so `clock_gettime(.MONOTONIC)` through `std.c` read another
   clock with 1 ms resolution under JS hosts, and the incremental budget could not be measured.
 - **Peak RSS.** On wasm, peak RSS is the size of linear memory.
+- **Stack.** The shadow stack is 1 MiB (`-Dwasm-stack-size`), not Zig's default 16 MiB. It sits
+  at the bottom of linear memory, so all of it counts toward every instance's memory. The
+  collectors use explicit work stacks, and the tests and benches use under 32 KiB. An overflow
+  traps instead of corrupting data, because the stack comes first.
+- **Debug info.** Optimized wasm builds are stripped (`-Dstrip=false` keeps the names). DWARF was
+  about 94% of the module, and engines keep the module bytes.
+- **Large objects.** Objects over 256 bytes, and `rt_gc_mem_*` buffers, still come from libc
+  malloc (`std.heap.BrkAllocator`). It rounds each block, plus its 16-byte header, up to a power of
+  two (a 300-byte object takes 512 bytes), and grows memory 64 KiB at a time.
+- **Host calls.** `wasi.mjs` keeps its views of `memory.buffer` and makes new ones only after a
+  `memory.grow` detached the old buffer, instead of on every call. The monotonic clock comes from
+  `process.hrtime.bigint()` where it exists. `random_get` fills buffers over 64 KiB in parts
+  (the Web Crypto limit). `random_get` and `fd_write` read pointers as unsigned and return `EFAULT`
+  for a buffer outside memory, because `subarray` would clamp it silently.
+- **Root buffers.** Perceus keeps the possible-root buffer between collections, unless it is more
+  than twice what the next collection needs (after a drain, or once the threshold drops). C moves
+  the roots buffered during a collection to a fresh buffer, which then grows again from its
+  initial capacity.
+  `PtrStack` blocks are a power of two less the allocator's header, so they do not round up to the
+  next size.
 
 ## Verdict
 

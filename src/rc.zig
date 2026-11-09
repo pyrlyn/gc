@@ -81,3 +81,5 @@ pub export fn rt_gc_free_later(p: ?*anyopaque) void {
     _ = p;
     host.rt_panic("rt_gc_free_later without deferred RC");
 }
+
+pub const debugPoolPages = regions.debugPoolPages;

@@ -440,3 +440,4 @@ pub fn debugSetBudgetUs(us: i64) void {
 pub fn debugRootsLen() usize {
     return pendingRoots();
 }
+pub const debugPoolPages = regions.debugPoolPages;

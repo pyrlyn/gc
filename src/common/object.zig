@@ -56,7 +56,14 @@ pub inline fn clearBuffered(obj: *anyopaque) void {
     header(obj).* &= ~BUF_BIT;
 }
 
-pub const PTR_STACK_INITIAL_CAPACITY: usize = 256;
+/// Bytes a PtrStack block leaves for the allocator's own bookkeeping. Blocks are powers of two minus
+/// this, so they fill a power-of-two slot exactly: Zig's wasm32 libc malloc (std.heap.BrkAllocator)
+/// adds a 16-byte header and a 4-byte free-list word and rounds up to a power of two, so a 2^k-byte
+/// buffer took a 2^(k+1) slot (twice the memory); glibc maps blocks >= 128 KiB with a 16-byte header
+/// (one more page). Darwin malloc and mimalloc keep no header, and lose at most these 32 bytes.
+pub const ALLOC_SLACK: usize = 32;
+const PTR_STACK_INITIAL_BYTES: usize = 256 * @sizeOf(?*anyopaque);
+pub const PTR_STACK_INITIAL_CAPACITY: usize = (PTR_STACK_INITIAL_BYTES - ALLOC_SLACK) / @sizeOf(?*anyopaque);
 
 pub const PtrStack = struct {
     items: [*]?*anyopaque = undefined,
@@ -75,9 +82,12 @@ pub const PtrStack = struct {
 
     /// Out of line: keeps `push` a compare + store at every visitor call site.
     noinline fn grow(self: *PtrStack, need: usize) void {
-        var new_cap = if (self.cap == 0) PTR_STACK_INITIAL_CAPACITY else self.cap * 2;
-        while (new_cap < need) new_cap *= 2;
-        const bytes = new_cap * @sizeOf(?*anyopaque);
+        // Block sizes (capacity bytes + ALLOC_SLACK) double from PTR_STACK_INITIAL_BYTES.
+        const W = @sizeOf(?*anyopaque);
+        var block: usize = if (self.cap == 0) PTR_STACK_INITIAL_BYTES else (self.cap * W + ALLOC_SLACK) * 2;
+        while (block - ALLOC_SLACK < need * W) block *= 2;
+        const new_cap = (block - ALLOC_SLACK) / W;
+        const bytes = new_cap * W;
         const raw = if (self.cap == 0)
             host.malloc(bytes)
         else
