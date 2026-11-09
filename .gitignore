@@ -2,3 +2,4 @@ zig-out/
 .zig-cache/
 .zig-0.17.1/
 coverage/
+zig-out-wasm/

@@ -38,7 +38,7 @@ linked into every program.
 | `--gc=` | Implementation | Cycles | Notes |
 |---|---|---|---|
 | `perceus` | [`perceus/gc.c`](perceus/gc.c) | collected | Perceus-style RC + synchronous trial-deletion cycle collector over the tracing region (Bacon & Rajan). The original built-in GC, unchanged; it was named `default` until epoch became the default. |
-| `incremental` | [`incremental/gc.c`](incremental/gc.c) | collected | `perceus` with the root buffer processed in slices of 64 under a per-step time budget (`KX_GC_BUDGET_US`, default 500 us); falls back to one pass when a single slice already exceeds the budget. |
+| `incremental` | [`incremental/gc.c`](incremental/gc.c) | collected | `perceus` with the root buffer processed in slices of 64 under a per-step time budget (`KX_GC_BUDGET_US`, default 500 us); falls back to one pass when a single slice already exceeds the budget. The Zig port ([`src/incremental.zig`](src/incremental.zig)) sizes slices from a fitted cost model instead and also runs as wasm32-wasi under JS ([docs/zig-port.md](docs/zig-port.md#incremental-scheduler)). |
 | `epoch` | [`epoch/gc.c`](epoch/gc.c) | collected | **Default** (also `--gc=default`). Deferred RC for possibly cyclic objects: the program logs reference operations per epoch, a background thread applies them and runs concurrent cycle detection with Delta/Sigma validation. See [`docs/architecture.md`](docs/architecture.md#7-epoch-collector-deferred-rc-background-cycle-collection). |
 | `rc` | [`rc/gc.c`](rc/gc.c) | leak | Same RC and regions, no cycle collector. Baseline for the collector's cost. |
 

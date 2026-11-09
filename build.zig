@@ -42,8 +42,13 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
+    // wasm32-wasi (Node/Bun/Deno/browser via scripts/wasm/run.mjs) is single-threaded: no pthreads,
+    // so `epoch` (background collector threads) is not built there.
+    const is_wasm = target.result.cpu.arch.isWasm();
+
     for (all_gcs) |g| {
         if (only) |want| if (!std.mem.eql(u8, want, g)) continue;
+        if (is_wasm and std.mem.eql(u8, g, "epoch")) continue;
 
         const coll = b.createModule(.{
             .root_source_file = b.path(b.fmt("src/{s}.zig", .{g})),
@@ -105,5 +110,23 @@ pub fn build(b: *std.Build) void {
         run_ops.addPassthruArgs();
         run_ops.has_side_effects = true;
         bench_step.dependOn(&run_ops.step);
+
+        // Cycle-collector workload (perceus / incremental); epoch and rc print "skipped".
+        const cycles = b.addExecutable(.{
+            .name = b.fmt("gc-cycles-{s}", .{g}),
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("bench/native/cycles.zig"),
+                .target = target,
+                .optimize = bench_opt,
+                .link_libc = true,
+                .imports = &.{
+                    .{ .name = "collector", .module = bcoll },
+                    .{ .name = "kxgc", .module = kxgc },
+                    .{ .name = "host", .module = host_fast },
+                },
+            }),
+        });
+        cycles.lto = ops_lto;
+        b.installArtifact(cycles);
     }
 }

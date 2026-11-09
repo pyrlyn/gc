@@ -62,6 +62,13 @@ pub export fn rt_nanos() i64 {
         const nsec = clock_gettime_nsec_np(.UPTIME_RAW);
         if (nsec == 0) c.abort();
         return @intCast(nsec);
+    } else if (comptime builtin.os.tag == .wasi) {
+        // WASI directly: wasi-libc's CLOCK_MONOTONIC is a pointer (`&_CLOCK_MONOTONIC`), so
+        // `clock_gettime(.MONOTONIC)` through std.c reads some other clock (realtime, 1 ms under
+        // JS hosts) and the incremental budget could not be measured at all.
+        var ns: std.os.wasi.timestamp_t = 0;
+        if (std.os.wasi.clock_time_get(.MONOTONIC, 1, &ns) != .SUCCESS) c.abort();
+        return @intCast(ns);
     } else {
         var ts: c.timespec = .{ .sec = 0, .nsec = 0 };
         if (c.clock_gettime(.MONOTONIC, &ts) != 0) c.abort();
@@ -142,8 +149,10 @@ pub fn getenv_present(name: [*:0]const u8) bool {
     return e[0] != 0 and e[0] != '0';
 }
 
-/// Peak RSS in KiB. Linux `ru_maxrss` is already KiB; Darwin reports bytes.
+/// Peak RSS in KiB. Linux `ru_maxrss` is already KiB; Darwin reports bytes. On wasm, linear
+/// memory never shrinks, so its current size is the peak.
 pub fn peakRssKb() i64 {
+    if (comptime builtin.cpu.arch.isWasm()) return @intCast(@wasmMemorySize(0) * 64);
     const ru = std.posix.getrusage(c.rusage.SELF);
     if (builtin.os.tag == .macos) return @divTrunc(ru.maxrss, 1024);
     return ru.maxrss;

@@ -8,7 +8,7 @@ const td_mod = @import("common/trial_deletion.zig");
 pub const name = "perceus";
 pub const caps = .{ .cycles = true, .precise = true, .asan = true, .deferred = false };
 
-const TD = td_mod.TrialDeletion(true);
+const TD = td_mod.TrialDeletion(true, false);
 var td = TD{};
 var cc_roots = obj.PtrStack{};
 var cc_running: bool = false;
@@ -185,4 +185,8 @@ pub fn debugIsBuffered(p: *anyopaque) bool {
 }
 pub fn debugInitialCap() usize {
     return obj.PTR_STACK_INITIAL_CAPACITY;
+}
+/// For bench/native/cycles.zig: possible roots currently buffered.
+pub fn debugRootsLen() usize {
+    return cc_roots.len;
 }

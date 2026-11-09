@@ -6,7 +6,10 @@ pub const CC_THRESHOLD: usize = 10000;
 pub const CC_MAX_THRESHOLD: usize = 1 << 18;
 pub const CC_PRODUCTIVE_RATIO: usize = 4;
 
-pub fn TrialDeletion(comptime claim_skips_buffered: bool) type {
+/// `track_buffered_black`: count the buffered objects `scanBlack` blackens (`blackened_buffered`), so
+/// a collector that runs trial deletion over a subset of its buffer rescans the rest of the buffer
+/// for live black roots only when there can be any (see `incremental.zig`).
+pub fn TrialDeletion(comptime claim_skips_buffered: bool, comptime track_buffered_black: bool) type {
     return struct {
         const Self = @This();
 
@@ -14,6 +17,7 @@ pub fn TrialDeletion(comptime claim_skips_buffered: bool) type {
         blacken: obj.PtrStack = .{},
         garbage: obj.PtrStack = .{},
         acyclic: obj.PtrStack = .{},
+        blackened_buffered: usize = 0,
         traced: usize = 0,
         threshold: usize = CC_THRESHOLD,
 
@@ -54,6 +58,7 @@ pub fn TrialDeletion(comptime claim_skips_buffered: bool) type {
 
         pub fn scanBlack(self: *Self, o: *anyopaque) void {
             obj.setColor(o, obj.BLACK);
+            if (track_buffered_black and obj.isBuffered(o)) self.blackened_buffered += 1;
             self.blacken.push(o);
             while (self.blacken.len != 0) {
                 const x = self.blacken.pop().?;
@@ -68,6 +73,7 @@ pub fn TrialDeletion(comptime claim_skips_buffered: bool) type {
             obj.header(ch).* += 1;
             if (obj.color(ch) != obj.BLACK) {
                 obj.setColor(ch, obj.BLACK);
+                if (track_buffered_black and obj.isBuffered(ch)) self.blackened_buffered += 1;
                 self.blacken.push(ch);
             }
         }
