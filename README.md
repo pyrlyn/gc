@@ -88,7 +88,7 @@ Paired Mac Zig timings are not in this repo yet. Linux VM logs are not Mac.
 | `NEWKOTLIN_GC_DIR` | compile | directory with implementations |
 | `KX_GC_STATS=1` | run | print GC statistics to stderr at exit |
 | `KX_GC_BUDGET_US` | run | per-step budget of `incremental` (default 500) |
-| `KX_GC_FREE_BUDGET_US` | run | `epoch`: freeing budget per epoch boundary (default half of `KX_GC_TARGET_PAUSE_US`, i.e. 1500) |
+| `KX_GC_FREE_BUDGET_US` | run | `epoch`: freeing budget per epoch boundary (default half of `KX_GC_TARGET_PAUSE_US`: 1500; in the Zig port the target defaults to 1000, so 500) |
 | `KX_GC_THREADS` | run | `epoch`: collector threads (default min(cores, 4)) |
 | `KX_GC_MAX_QUEUED` | run | `epoch`: logs the collector may lag before the program waits (default: adaptive, 2-16) |
 | `KX_GC_EXIT_DRAIN` | run | `epoch`: `1` drains the queue at exit in any build |

@@ -335,6 +335,113 @@ fn deferredSizes() void {
     }
 }
 
+// MarkGray follows the fields as they were, Scan as they are. A store between the two (made here by
+// the root's own `trav`, the first time it runs) leaves the objects behind the lost edge gray with a
+// CRC; unless every object MarkGray reached is reset afterwards, the next detection does not trace
+// through them and their cycle looks live for good.
+var cut_root: ?*Obj = null;
+var cut_armed: bool = false;
+fn cutTrav(p: ?*anyopaque, f: ?kx.VisitFn) callconv(.c) void {
+    const o: *Obj = @ptrCast(@alignCast(p));
+    f.?(o.next);
+    if (cut_armed and o == cut_root) {
+        cut_armed = false;
+        o.next = null;
+    }
+}
+var cut_vt: kx.VTab = .{ .rel = objRel, .trav = cutTrav, .relo = objRelo, .freemem = objFree, .cyclic = @ptrFromInt(1) };
+
+fn deferredLostEdge() void {
+    if (comptime !gc.caps.deferred) return;
+    gc.rt_gc_collect();
+    freed = 0;
+    const r = newObj(0);
+    const b = newObj(1);
+    const d = newObj(2);
+    r.vt = &cut_vt;
+    r.hdr = 2; // one reference stays with the test
+    b.hdr = 2; // r and d
+    r.next = b;
+    b.next = d;
+    d.next = b;
+    cut_root = r;
+    cut_armed = true;
+    gc.rt_gc_log_dec(r); // r becomes a possible root
+    gc.rt_gc_collect(); // MarkGray r -> b -> d, then r.next is cleared before Scan
+    check(!cut_armed, "detection traced the root");
+    gc.rt_gc_log_dec(b); // the log entries of that store
+    gc.rt_gc_write_barrier(r);
+    var i: u32 = 0;
+    while (i < 3) : (i += 1) gc.rt_gc_collect();
+    check(freed == 2, "cycle behind an edge lost between MarkGray and Scan");
+    cut_root = null;
+    gc.rt_gc_log_dec(r);
+    gc.rt_gc_collect();
+    check(freed == 3, "lost-edge root released");
+}
+
+// Returned objects are freed a few per allocation and a chunk per boundary. Freeing one releases
+// its untraced child, whose `rel` logs: the log fills up and a boundary runs in the middle of the
+// free, which frees returned objects itself. Every object must still be freed exactly once.
+const PACED = 20000;
+const Leaf = extern struct {
+    hdr: u64,
+    vt: *kx.VTab,
+};
+var paced_keep: ?*Obj = null;
+var paced_seen: [PACED]u8 = @splat(0);
+var paced_freed: usize = 0;
+var paced_twice: usize = 0;
+var leaf_released: usize = 0;
+fn leafRel(p: ?*anyopaque) callconv(.c) void {
+    leaf_released += 1;
+    var i: u32 = 0;
+    while (i < 64) : (i += 1) {
+        gc.rt_gc_log_inc(paced_keep);
+        gc.rt_gc_log_dec(paced_keep);
+    }
+    gc.rt_free(p, @sizeOf(Leaf));
+}
+var leaf_vt: kx.VTab = .{ .rel = leafRel, .trav = null, .relo = null, .freemem = null, .cyclic = null };
+fn pacedFree(p: ?*anyopaque) callconv(.c) void {
+    const o: *Obj = @ptrCast(@alignCast(p));
+    const i: usize = @intCast(o.val);
+    if (i >= PACED or paced_seen[i] != 0) paced_twice += 1 else paced_seen[i] = 1;
+    paced_freed += 1;
+    gc.rt_free_trace(p, @sizeOf(Obj));
+}
+var paced_vt: kx.VTab = .{ .rel = objRel, .trav = objTrav, .relo = objRelo, .freemem = pacedFree, .cyclic = @ptrFromInt(1) };
+
+fn deferredPacedFree() void {
+    if (comptime !gc.caps.deferred) return;
+    gc.rt_gc_collect();
+    gc.rt_gc_root_hint(null); // not an object: nothing to log
+    gc.debugSetFreeBudgetUs(0); // a boundary frees one chunk, allocations the rest
+    paced_keep = newObj(7);
+    var i: usize = 0;
+    while (i < PACED) : (i += 1) {
+        const o = newObj(@intCast(i));
+        o.vt = &paced_vt;
+        const leaf: *Leaf = @ptrCast(@alignCast(gc.rt_alloc(@sizeOf(Leaf)).?));
+        leaf.* = .{ .hdr = 1, .vt = &leaf_vt };
+        o.next = @ptrCast(leaf);
+        gc.rt_gc_log_dec(o);
+    }
+    // No collect: only boundaries and allocations free what the collector returns.
+    var spins: usize = 0;
+    while (paced_freed < PACED and spins < 20_000_000) : (spins += 1) gc.rt_gc_log_dec(newObj(0));
+    check(paced_freed == PACED, "returned objects are freed without a collect");
+    gc.rt_gc_collect();
+    check(paced_freed == PACED and paced_twice == 0, "each returned object freed once");
+    check(leaf_released == PACED, "each untraced child released once");
+    check(gc.debugReturnsPending() == 0, "no returned object left after a collect");
+    gc.debugSetFreeBudgetUs(-1);
+    check(paced_keep.?.val == 7 and countOf(paced_keep.?) == 1, "object logged from a release survives");
+    gc.rt_gc_log_dec(paced_keep);
+    paced_keep = null;
+    gc.rt_gc_collect();
+}
+
 const FANOUT = 64;
 const Node = extern struct {
     hdr: u64,
@@ -574,6 +681,8 @@ pub fn main() u8 {
     if (gc.caps.deferred) {
         apiDeferred();
         deferredSizes();
+        deferredLostEdge();
+        deferredPacedFree();
     } else {
         acyclicChain();
         sharedSurvives();
