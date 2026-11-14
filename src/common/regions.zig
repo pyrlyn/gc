@@ -32,18 +32,27 @@ const CHUNK: usize = 1 << 20;
 const WASM_PAGE: usize = 64 << 10;
 
 const PageHdr = struct {
-    /// The next page of the stock, or of the pages a walk found blocks of.
+    /// The next page of the stock, or of the pages a walk found blocks of (`prev`: the one before,
+    /// among those).
     next: ?*PageHdr,
-    /// Walk scratch (`Pages.step`): the page's free blocks found in walk `walk`, first and last, and
-    /// their count.
-    head: ?*anyopaque,
-    tail: ?*anyopaque,
+    prev: ?*PageHdr,
     walk: u32,
     cls: u16,
+    /// Walk scratch (`Pages.step`): the page's free blocks found in walk `walk`: their count, and
+    /// the first and the last as offsets in the page (which keeps the header at 32 bytes).
     nfree: u16,
+    head: u16,
+    tail: u16,
+
+    inline fn block(pg: *PageHdr, off: u16) *anyopaque {
+        return @ptrCast(@as([*]u8, @ptrCast(pg)) + off);
+    }
 };
 /// Blocks start after the header, at 8-byte granularity like C's slab blocks.
 const HDR: usize = std.mem.alignForward(usize, @sizeOf(PageHdr), 16);
+comptime {
+    std.debug.assert(HDR == 32);
+}
 
 inline fn classOf(size: i64) usize {
     return (@as(usize, @intCast(size)) + 7) >> RT_SIZE_CLASS_SHIFT;
@@ -102,9 +111,12 @@ const WALK_STEP: usize = 4096;
 const WALK_GAP: usize = 4 * PAGE;
 
 /// Pages for every pool: those walks found free, then the rest of the newest chunk.
-/// A walk goes over the classes one at a time. It takes a class's free list, sorts its blocks by
-/// page `WALK_STEP` at a time whenever a page is needed and the stock is empty, then moves the pages
-/// with every block free to the stock and gives the rest back to the class, grouped by page.
+/// A walk goes over the classes one at a time. It takes a class's free list and sorts its blocks by
+/// page, `WALK_STEP` at a time whenever a page is needed and the stock is empty. A page goes to the
+/// stock as soon as its last block is sorted; the other pages go back to the class, grouped by page,
+/// when its list is done. (Pages used to wait for the end of the list as well: a class with 100000
+/// free blocks then took 25 new pages from the system before its own came back, at every walk, and
+/// a program moving between object sizes grew until each class held its peak: 80 MiB for 28.)
 const Pages = struct {
     empty: ?*PageHdr = null,
     chunk_ptr: usize = 0,
@@ -181,26 +193,38 @@ const Pages = struct {
                 next.free = null;
                 continue;
             }
+            const c = classAt(self.class);
+            const cap = capacity(self.class % RT_CLASSES + 1);
             while (self.unsorted) |b| {
                 if (budget == 0) return;
                 budget -= 1;
                 self.unsorted = link(b).*;
                 const pg = pageOf(b);
+                const off: u16 = @intCast(@intFromPtr(b) - @intFromPtr(pg));
                 if (pg.walk != self.walk) {
-                    pg.* = .{ .next = self.found, .head = null, .tail = b, .walk = self.walk, .cls = pg.cls, .nfree = 0 };
+                    pg.* = .{ .next = self.found, .prev = null, .walk = self.walk, .cls = pg.cls, .nfree = 0, .head = 0, .tail = off };
+                    if (self.found) |f| f.prev = pg;
                     self.found = pg;
                 }
-                link(b).* = pg.head;
-                pg.head = b;
+                link(b).* = if (pg.head == 0) null else pg.block(pg.head);
+                pg.head = off;
                 pg.nfree += 1;
+                if (pg.nfree == cap and pg != c.page) {
+                    if (pg.prev) |q| q.next = pg.next else self.found = pg.next;
+                    if (pg.next) |n| n.prev = pg.prev;
+                    pg.walk = 0;
+                    pg.next = self.empty;
+                    self.empty = pg;
+                }
             }
             self.finish(classAt(self.class), self.class % RT_CLASSES + 1);
             self.class = NO_CLASS;
         }
     }
 
-    /// Pages whose blocks were all on the list go to the stock (unless the class still bumps through
-    /// it), the rest back to the class, in front of the blocks it freed meanwhile.
+    /// The pages left: one whose blocks were all on the list goes to the stock now (the class was
+    /// bumping through it when its last block was sorted, and is not any more), the rest back to the
+    /// class, in front of the blocks it freed meanwhile.
     fn finish(self: *Pages, c: *Class, cls: usize) void {
         const cap = capacity(cls);
         var next = self.found;
@@ -211,8 +235,8 @@ const Pages = struct {
                 pg.next = self.empty;
                 self.empty = pg;
             } else {
-                link(pg.tail.?).* = c.free;
-                c.free = pg.head;
+                link(pg.block(pg.tail)).* = c.free;
+                c.free = pg.block(pg.head);
                 self.kept += @as(usize, pg.nfree) * (cls << RT_SIZE_CLASS_SHIFT);
             }
         }
@@ -279,14 +303,22 @@ const Pool = struct {
         const c = classAt(i);
         // A walk holds this class's free blocks: use those it has not sorted yet. A block taken
         // there is live when the walk counts its page.
-        if (pages.class == i) if (pages.unsorted) |p| {
-            pages.unsorted = link(p).*;
-            link(p).* = null;
-            c.free = p;
-            return;
-        };
+        if (pages.class == i) {
+            if (pages.unsorted) |p| {
+                pages.unsorted = link(p).*;
+                link(p).* = null;
+                c.free = p;
+                return;
+            }
+            // All sorted. The walk goes on only when the stock is empty, and emptied pages now
+            // reach the stock while a class is being sorted: the class takes the free blocks of
+            // its other pages back here, before it takes a page.
+            pages.finish(c, cls);
+            pages.class = NO_CLASS;
+            if (c.free != null) return;
+        }
         const pg = pages.take(cls);
-        pg.* = .{ .next = null, .head = null, .tail = null, .walk = 0, .cls = @intCast(cls), .nfree = 0 };
+        pg.* = .{ .next = null, .prev = null, .walk = 0, .cls = @intCast(cls), .nfree = 0, .head = 0, .tail = 0 };
         const base: [*]u8 = @ptrCast(pg);
         c.page = pg;
         c.ptr = base + HDR;

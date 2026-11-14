@@ -125,8 +125,9 @@ pub fn build(b: *std.Build) void {
 
         // Cycle-collector workload (perceus / incremental; epoch and rc print "skipped"), and size-class
         // phases (peak memory when memory freed by one size class must serve the next), and random churn
-        // (free and replace objects in random order).
-        for ([_][]const u8{ "cycles", "phases", "churn" }) |bench| {
+        // (free and replace objects in random order), and mass death under deferred RC (epoch; the others
+        // print "skipped").
+        for ([_][]const u8{ "cycles", "phases", "churn", "drop" }) |bench| {
             const exe = b.addExecutable(.{
                 .name = b.fmt("gc-{s}-{s}", .{ bench, g }),
                 .root_module = b.createModule(.{

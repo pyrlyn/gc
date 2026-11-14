@@ -105,6 +105,10 @@ fn ensureBits() void {
 const SLAB_CHUNK: usize = 2 << 20;
 const SLAB_DIR_TOP: usize = 1 << (PAGE_BITS_LOG - 16);
 const SLAB_RESIDENT_KEEP: i64 = 16;
+/// Emptied slabs one boundary hands to the pool: each may cost an madvise call (a few microseconds),
+/// and a mass death empties hundreds at once. The rest stay in `slab_pending`, where `slabRefill`
+/// takes them from.
+const SLAB_FLUSH_MAX: usize = 64;
 
 const Slab = extern struct {
     next: ?*Slab = null,
@@ -198,20 +202,35 @@ fn partialUnlink(s: *Slab, cls: usize) void {
     s.in_partial = 0;
 }
 
+/// An empty slab for any class: one emptied since the last boundary (still resident; C leaves these
+/// to `slab_flush`, so a program that frees between boundaries mapped new slabs next to empty
+/// ones), else one from the pool.
+fn slabTakeEmpty() ?*Slab {
+    var s: *Slab = undefined;
+    if (slab_pending.len != 0) {
+        // Pushed with no live cell, neither current nor in a partial list: unreachable since.
+        s = @ptrCast(@alignCast(slab_pending.pop().?));
+        std.debug.assert(s.live == 0 and s.in_partial == 0 and s != slab_cur[s.cls]);
+    } else if (slab_pool) |pooled| {
+        slab_pool = pooled.next;
+        if (pooled.resident != 0) slab_pool_resident -= 1;
+        s = pooled;
+    } else return null;
+    s.next = null;
+    s.resident = 1;
+    s.free = null;
+    s.bump = s.base;
+    s.live = 0;
+    return s;
+}
+
 // C: `__attribute__((noinline)) void *slab_refill` — keep the slab_alloc hot path small.
 noinline fn slabRefill(cls: usize) *anyopaque {
     var s = slab_partial[cls];
     if (s) |taken| {
         partialUnlink(taken, cls);
-    } else if (slab_pool) |pooled| {
-        slab_pool = pooled.next;
-        pooled.next = null;
-        if (pooled.resident != 0) slab_pool_resident -= 1;
-        pooled.resident = 1;
-        pooled.free = null;
-        pooled.bump = pooled.base;
-        pooled.live = 0;
-        s = pooled;
+    } else if (slabTakeEmpty()) |empty| {
+        s = empty;
     } else {
         const fresh = slabNew();
         fresh.bump = fresh.base;
@@ -291,11 +310,12 @@ fn slabFlush() void {
         slab_keep = host.getenv_i64("KX_GC_SLAB_KEEP", SLAB_RESIDENT_KEEP);
         if (slab_keep < 0) slab_keep = 0;
     }
+    // The newest SLAB_FLUSH_MAX; `batch[0..n)` collects those to give back to the system.
+    const take = @min(slab_pending.len, SLAB_FLUSH_MAX);
+    const batch = slab_pending.items[slab_pending.len - take .. slab_pending.len];
     var n: usize = 0;
-    var i: usize = 0;
-    while (i < slab_pending.len) : (i += 1) {
-        const s: *Slab = @ptrCast(@alignCast(slab_pending.at(i).?));
-        if (s.live != 0 or s == slab_cur[s.cls]) continue;
+    for (batch) |entry| {
+        const s: *Slab = @ptrCast(@alignCast(entry.?));
         s.next = slab_pool;
         slab_pool = s;
         if (slab_pool_resident < slab_keep) {
@@ -303,24 +323,24 @@ fn slabFlush() void {
             continue;
         }
         s.resident = 0;
-        slab_pending.set(n, s);
+        batch[n] = s;
         n += 1;
     }
-    if (n > 1) std.mem.sort(?*anyopaque, slab_pending.items[0..n], {}, slabCmp);
-    i = 0;
+    if (n > 1) std.mem.sort(?*anyopaque, batch[0..n], {}, slabCmp);
+    var i: usize = 0;
     while (i < n) {
         var j = i + 1;
         while (j < n) {
-            const prev: *Slab = @ptrCast(@alignCast(slab_pending.at(j - 1).?));
-            const nxt: *Slab = @ptrCast(@alignCast(slab_pending.at(j).?));
+            const prev: *Slab = @ptrCast(@alignCast(batch[j - 1].?));
+            const nxt: *Slab = @ptrCast(@alignCast(batch[j].?));
             if (@intFromPtr(nxt.base) != @intFromPtr(prev.base) + PAGE) break;
             j += 1;
         }
-        const from: *Slab = @ptrCast(@alignCast(slab_pending.at(i).?));
+        const from: *Slab = @ptrCast(@alignCast(batch[i].?));
         madv(@ptrCast(from.base), (j - i) * PAGE);
         i = j;
     }
-    slab_pending.len = 0;
+    slab_pending.len -= take;
 }
 
 const Big = extern struct { next: ?*Big, size: usize };
@@ -403,7 +423,7 @@ pub inline fn allocTrace(size: i64) ?*anyopaque {
     // Keep this body tiny so Darwin no-LTO inlines it into newObj / op_alloc
     // the way C -flto inlines rt_alloc_trace → slab_alloc. Cold paths are noinline.
     // (C's t_allocs/t_frees debug counters are never read by this port: not kept.)
-    if (ret_pos < ret_local.len) freePaced();
+    if (ret_local.head != null) freePaced();
     alloc_left -%= 1;
     if (alloc_left == 0) {
         @branchHint(.unlikely);
@@ -493,6 +513,28 @@ fn waitWork() void {
 fn waitDone() void {
     _ = std.c.pthread_cond_wait(&cv_done, &mu);
 }
+extern "c" fn pthread_cond_timedwait_relative_np(cond: *std.c.pthread_cond_t, mutex: *std.c.pthread_mutex_t, rel: *const std.c.timespec) c_int;
+
+/// `waitDone` for at most `ns`. It can return early: the caller looks at the clock again.
+fn waitDoneFor(ns: i64) void {
+    const n = @min(ns, std.time.ns_per_s / 10);
+    var ts: std.c.timespec = undefined;
+    if (comptime builtin.os.tag.isDarwin()) {
+        // Relative: no clock to read. The wait is taken at most boundaries of a mutator that logs
+        // faster than the collector applies, and lasts some tens of microseconds.
+        ts = .{ .sec = 0, .nsec = @intCast(n) };
+        _ = pthread_cond_timedwait_relative_np(&cv_done, &mu, &ts);
+        return;
+    }
+    if (std.c.clock_gettime(.REALTIME, &ts) != 0) return waitDone();
+    var nsec: i64 = @as(i64, ts.nsec) + n;
+    if (nsec >= std.time.ns_per_s) {
+        nsec -= std.time.ns_per_s;
+        ts.sec += 1;
+    }
+    ts.nsec = @intCast(nsec);
+    _ = std.c.pthread_cond_timedwait(&cv_done, &mu, &ts);
+}
 fn signalWork() void {
     _ = std.c.pthread_cond_signal(&cv_work);
 }
@@ -505,12 +547,83 @@ var q_tail: ?*Log = null;
 var log_pool: ?*Log = null;
 var pool_len: usize = 0; // guarded by mu
 var q_len: usize = 0;
+/// Entries in the queued logs. Guarded by mu.
+var q_entries: usize = 0;
 var handed: u64 = 0;
 var applied: u64 = 0;
 var m_applied: u64 = 0;
-var ret_shared = obj.PtrStack{};
-var ret_local = obj.PtrStack{};
+/// Dead objects on their way from the collector to the mutator, which frees them: a list of chunks.
+/// The collector fills chunks of its own (`c_ret`) and splices them onto `ret_shared`; a boundary
+/// splices `ret_shared` onto the mutator's `ret_local`. Both are O(1) under `mu`, and a chunk is
+/// freed once its objects are. As three PtrStacks (C), publishing copied the batch under the lock
+/// whenever the mutator had not taken the previous one, the shared stack grew by realloc under the
+/// lock, and each stack kept the capacity of the largest batch ever: 8 MiB apiece after one million
+/// objects died at once.
+/// Objects in a chunk (2 KiB with the header). A boundary looks at the clock between two chunks, so
+/// a chunk is also the least it frees and what it can overrun its budget by.
+const RET_CHUNK = 254;
+const RetChunk = struct {
+    next: ?*RetChunk,
+    len: usize,
+    items: [RET_CHUNK]*anyopaque,
+};
+const RetList = struct {
+    head: ?*RetChunk = null,
+    tail: ?*RetChunk = null,
+    /// Objects in the list.
+    n: usize = 0,
+
+    fn push(l: *RetList, p: *anyopaque) void {
+        var c = l.tail;
+        if (c == null or c.?.len == RET_CHUNK) {
+            @branchHint(.unlikely);
+            c = l.grow();
+        }
+        const chunk = c.?;
+        chunk.items[chunk.len] = p;
+        chunk.len += 1;
+        l.n += 1;
+    }
+
+    // Out of line: `push` is inlined into the collector's decrement path.
+    noinline fn grow(l: *RetList) *RetChunk {
+        const fresh: *RetChunk = @ptrCast(@alignCast(host.malloc(@sizeOf(RetChunk))));
+        fresh.next = null;
+        fresh.len = 0;
+        if (l.tail) |t| t.next = fresh else l.head = fresh;
+        l.tail = fresh;
+        return fresh;
+    }
+
+    /// Moves the chunks of `from` behind those of `to`.
+    fn splice(to: *RetList, from: *RetList) void {
+        const h = from.head orelse return;
+        if (to.tail) |t| t.next = h else to.head = h;
+        to.tail = from.tail;
+        to.n += from.n;
+        from.* = .{};
+    }
+};
+var ret_shared = RetList{}; // guarded by mu
+var ret_local = RetList{}; // mutator
+/// Objects of `ret_local.head` already taken.
 var ret_pos: usize = 0;
+
+/// The next returned object. It leaves the list before it is freed: freeing it can log entries, and
+/// a log that fills up there runs a boundary, which frees returned objects itself.
+inline fn retTake() *anyopaque {
+    const c = ret_local.head.?;
+    const p = c.items[ret_pos];
+    ret_pos += 1;
+    ret_local.n -= 1;
+    if (ret_pos == c.len) {
+        ret_local.head = c.next;
+        if (c.next == null) ret_local.tail = null;
+        ret_pos = 0;
+        host.free(c);
+    }
+    return p;
+}
 var full_req: bool = false;
 var full_done: u64 = 0;
 var shutting: bool = false;
@@ -615,7 +728,24 @@ fn queueAdapt(d: i64) void {
     }
 }
 
-fn handoff() void {
+/// Queues `l` for the collector. Under mu.
+fn enqueue(l: *Log) void {
+    handed += 1;
+    l.seq = handed;
+    if (q_tail) |tail| tail.next = l else q_head = l;
+    q_tail = l;
+    q_len += 1;
+    q_entries += l.n;
+    signalWork();
+}
+
+/// Queued entries up to which a boundary gives up waiting for the collector once its share of the
+/// pause is spent: what a queue of Q_ADAPT_MAX full logs holds (4 MiB). Past it the wait is
+/// unbounded, as it always was in C: the queue must not grow without limit.
+const Q_SOFT_ENTRIES = Q_ADAPT_MAX * LOG_CAP;
+
+/// `wait_until` (an `rt_nanos` time) ends the back-pressure wait of this boundary.
+fn handoff(wait_until: i64) void {
     lock();
     if (!coll_started) {
         coll_started = true;
@@ -626,13 +756,8 @@ fn handoff() void {
     }
     if (cur) |l| {
         if (l.n != 0 or l.frees.len != 0) {
-            handed += 1;
-            l.seq = handed;
-            if (q_tail) |tail| tail.next = l else q_head = l;
-            q_tail = l;
-            q_len += 1;
+            enqueue(l);
             cur = null;
-            signalWork();
         }
     }
     if (max_queued == 0) {
@@ -641,16 +766,31 @@ fn handoff() void {
             max_queued = @intCast(qe);
             q_fixed = true;
         } else max_queued = Q_ADAPT_START;
-        q_target_ns = host.getenv_i64("KX_GC_TARGET_PAUSE_US", 3000) * 1000;
+        q_target_ns = @max(host.getenv_i64("KX_GC_TARGET_PAUSE_US", TARGET_PAUSE_US_DEFAULT), 0) *| 1000;
     }
+    // The collector is behind. Waiting for it is the pause: C waits until the queue is short again,
+    // however long the collector takes (5-18 ms while it released a million objects that died
+    // together). The wait ends with this boundary's share of the pause instead; the mutator then
+    // goes on with a longer queue, and meets the same wait at its next boundary.
     var d: i64 = 0;
     if (q_len > max_queued) {
         const w0 = host.rt_nanos();
-        while (q_len > max_queued) waitDone();
-        d = host.rt_nanos() - w0;
+        var now = w0;
+        while (q_len > max_queued) {
+            if (q_fixed or q_entries > Q_SOFT_ENTRIES or wait_until == NO_DEADLINE) {
+                waitDone();
+            } else if (now < wait_until) {
+                waitDoneFor(wait_until - now);
+            } else {
+                d = q_target_ns + 1; // counts as a wait over the target: the queue limit grows
+                break;
+            }
+            now = host.rt_nanos();
+        }
+        d = @max(d, now - w0);
     }
     if (!q_fixed) queueAdapt(d);
-    obj.PtrStack.moveFrom(&ret_local, &ret_shared);
+    ret_local.splice(&ret_shared);
     m_applied = applied;
     if (cur == null) cur = logNew();
     unlock();
@@ -658,7 +798,7 @@ fn handoff() void {
 
 var c_roots = obj.PtrStack{};
 var c_work = obj.PtrStack{};
-var c_ret = obj.PtrStack{};
+var c_ret = RetList{};
 var c_deferred = obj.PtrStack{};
 var c_live_def = obj.PtrStack{};
 var c_dying = obj.PtrStack{};
@@ -745,11 +885,14 @@ fn releaseChildren(p: *anyopaque) void {
     c_releasing = false;
 }
 
-fn releaseDead(p: *anyopaque) void {
+// Both out of line: they keep `decApply` small enough to be inlined into `applyLog`. With the
+// death path inlined into it instead, every decrement paid a call and a frame, and a mutator
+// waiting on the queue paid with it (field_store +15-20%, rc_pair +7%).
+noinline fn releaseDead(p: *anyopaque) void {
     retPush(p);
     releaseChildren(p);
 }
-fn releaseZombie(p: *anyopaque) void {
+noinline fn releaseZombie(p: *anyopaque) void {
     c_zombies += 1;
     setBit(p, ZOMBIE_BIT);
     releaseChildren(p);
@@ -835,6 +978,10 @@ fn mgChild(t: ?*anyopaque) callconv(.c) void {
     if (((h >> kx.COLOR_SHIFT) & 3) != obj.GRAY) {
         obj.setColor(p, obj.GRAY);
         if ((h >> CRC_SHIFT) & CRC_MAX == 1) clrBit(p, DIRTY_BIT);
+        // C `stack_push(&tw->marked, t)`, which the port had dropped: only the roots were settled
+        // after a detection. An object that lost the edge MarkGray reached it through stayed gray
+        // with its CRC, was not traced through again, and a garbage cycle behind it leaked.
+        c_marked.push(p);
         c_work.push(p);
     }
 }
@@ -1060,6 +1207,9 @@ fn detectPrepare(major: bool) obj.PtrStack {
     return roots;
 }
 
+/// Capacity `c_marked` keeps between detections (512 KiB).
+const MARKED_KEEP = 65536;
+
 fn settle(x: *anyopaque) void {
     if (has(x, CAND_BIT)) return;
     if (obj.color(x) == obj.GRAY or obj.color(x) == obj.WHITE) obj.setColor(x, obj.BLACK);
@@ -1089,7 +1239,8 @@ fn detect(major: bool) void {
     while (i < roots.len) : (i += 1) collectWhite(roots.at(i).?);
     i = 0;
     while (i < c_marked.len) : (i += 1) settle(c_marked.at(i).?);
-    c_marked.len = 0;
+    // It held every object this detection reached: do not keep that for a small one.
+    if (c_marked.cap > MARKED_KEEP) c_marked.deinit() else c_marked.len = 0;
     if (!major and c_hit_stable) {
         i = 0;
         while (i < roots.len) : (i += 1) {
@@ -1138,9 +1289,9 @@ fn fullCycle() void {
 }
 
 fn publishReturns() void {
-    if (c_ret.len == 0) return;
+    if (c_ret.head == null) return;
     lock();
-    obj.PtrStack.moveFrom(&ret_shared, &c_ret);
+    ret_shared.splice(&c_ret);
     unlock();
 }
 
@@ -1210,13 +1361,12 @@ fn sweepDeferred() void {
     c_zombies = 0;
 }
 
-/// The collector thread's own `rt_trav_mode` (thread-local in the runtime). Taken once:
-/// on Darwin every thread-local access is a `_tlv_get_addr` call (~8% of collector time
-/// when it was read and written around each dead object).
+/// The collector thread's own `rt_trav_mode` (thread-local in the runtime). Taken once
+/// (`travMode`): on Darwin every thread-local access is a `_tlv_get_addr` call.
 var coll_tm: *c_int = undefined;
 
 fn collectorMain() void {
-    coll_tm = &host.rt_trav_mode;
+    coll_tm = travMode();
     lock();
     while (true) {
         while (q_head == null and !full_req and !shutting) waitWork();
@@ -1224,6 +1374,7 @@ fn collectorMain() void {
             q_head = l.next;
             if (q_head == null) q_tail = null;
             q_len -= 1;
+            q_entries -= l.n;
             broadcastDone();
             unlock();
             var i: usize = 0;
@@ -1314,41 +1465,54 @@ inline fn freeReturned(p: *anyopaque, tm: *c_int) void {
     m_held.push(@ptrFromInt(if (cur != null and cur.?.n != 0) handed + 1 else handed));
 }
 
-fn processReturns() void {
+/// The calling thread's `rt_trav_mode`, looked up once per batch. The address goes through a
+/// volatile load: LLVM treats a thread-local's address as a constant, so it folds a pointer copied
+/// from it (in a local, a global stored once, or the result of a call) back into a lookup at every
+/// use, and on Darwin each lookup is a `_tlv_get_addr` call: two per object freed, 8% of the
+/// collector's time in alloc_drop.
+fn travMode() *c_int {
+    var p: *c_int = &host.rt_trav_mode;
+    return @as(*volatile *c_int, &p).*;
+}
+
+const NO_DEADLINE = std.math.maxInt(i64);
+
+/// Frees returned objects, a chunk at a time, until `deadline` (an `rt_nanos` time; NO_DEADLINE: all
+/// of them). What is left goes at later boundaries and, a few per allocation, in `freePaced`.
+/// C `process_returns`; the port had dropped the budget, so one boundary freed everything the
+/// collector had returned: a pause of 11-18 ms after a million objects died together.
+fn processReturns(deadline: i64) void {
     if (m_held.len != 0) freeHeld(false);
-    const tm = &host.rt_trav_mode;
-    while (ret_pos < ret_local.len) {
-        freeReturned(ret_local.at(ret_pos).?, tm);
-        ret_pos += 1;
+    const tm = travMode();
+    while (ret_local.head) |c| {
+        // The chunk leaves the list first (see `retTake`).
+        var i = ret_pos;
+        ret_local.head = c.next;
+        if (c.next == null) ret_local.tail = null;
+        ret_local.n -= c.len - i;
+        ret_pos = 0;
+        while (i < c.len) : (i += 1) freeReturned(c.items[i], tm);
+        host.free(c);
+        if (deadline != NO_DEADLINE and host.rt_nanos() > deadline) break;
     }
-    ret_local.len = 0;
-    ret_pos = 0;
 }
 
 // C free_returned stays out of line. Inlining the paced loop into allocTrace
 // made newObj too fat for op_alloc (no-LTO `call newObj` every iteration).
 noinline fn freePaced() void {
-    if (ret_pos >= ret_local.len) return;
-    const back = ret_local.len - ret_pos;
+    const back = ret_local.n;
     var k: usize = if (back > 65536) 16 else if (back > 16384) 8 else if (back > 4096) 4 else 2;
-    const tm = &host.rt_trav_mode;
-    while (k > 0 and ret_pos < ret_local.len) : (k -= 1) {
-        freeReturned(ret_local.at(ret_pos).?, tm);
-        ret_pos += 1;
-    }
-    if (ret_pos == ret_local.len) {
-        ret_local.len = 0;
-        ret_pos = 0;
-    }
+    const tm = travMode();
+    while (k > 0 and ret_local.head != null) : (k -= 1) freeReturned(retTake(), tm);
 }
 
 // C: `__attribute__((noinline)) void log_first` so log_op has no stack frame.
 noinline fn logFirst() void {
-    const e = std.c.getenv("KX_GC_LOG_CAP");
-    if (e != null and e.?[0] != 0) {
-        var cap: usize = @intCast(host.getenv_i64("KX_GC_LOG_CAP", 512));
-        if (cap > LOG_CAP) cap = LOG_CAP;
-        log_cap.store(cap, .monotonic);
+    // C: a value <= 0 is ignored. Here 0 made every logged operation a boundary and a negative
+    // one was cast to usize.
+    const fixed = host.getenv_i64("KX_GC_LOG_CAP", 0);
+    if (fixed > 0) {
+        log_cap.store(@intCast(@min(fixed, LOG_CAP)), .monotonic);
         log_cap_fixed = true;
     } else logCapFollow();
     lock();
@@ -1386,25 +1550,40 @@ pub inline fn writeBarrier(o: ?*anyopaque) void {
     logOp(@intFromPtr(o) | OP_MOD);
 }
 
+/// C: KX_GC_TARGET_PAUSE_US defaults to 3000. A boundary here aims at 1 ms.
+const TARGET_PAUSE_US_DEFAULT: i64 = 1000;
+const FREE_BUDGET_MIN_NS: i64 = 200_000;
+var free_budget_ns: i64 = -1;
+
+/// Time a boundary may spend freeing returned objects, counted from its start: KX_GC_FREE_BUDGET_US,
+/// by default half the target pause (C: 200 us let returned garbage pile up).
+fn freeBudgetNs() i64 {
+    if (free_budget_ns < 0) {
+        const us = host.getenv_i64("KX_GC_FREE_BUDGET_US", -1);
+        free_budget_ns = if (us >= 0) us *| 1000 else @max(@divTrunc(q_target_ns, 2), FREE_BUDGET_MIN_NS);
+    }
+    return free_budget_ns;
+}
+
+/// Time a boundary may wait for the collector, counted from its start: 2/5 of the target pause.
+/// The rest is for freeing returned objects (at least a chunk of them) and releasing slabs.
+fn waitBudgetNs() i64 {
+    return @divTrunc(q_target_ns, 5) * 2;
+}
+
 // Out of line like C: inlining this into log_op gives every retain/store a fat frame.
 noinline fn boundary() void {
     if (in_boundary) {
         lock();
-        handed += 1;
-        cur.?.seq = handed;
-        if (q_tail) |t| t.next = cur else q_head = cur;
-        q_tail = cur;
-        q_len += 1;
-        cur = null;
-        signalWork();
+        enqueue(cur.?);
         cur = logNew();
         unlock();
         return;
     }
     in_boundary = true;
     const t0 = host.rt_nanos();
-    handoff();
-    processReturns();
+    handoff(t0 + waitBudgetNs());
+    processReturns(t0 + freeBudgetNs());
     slabFlush();
     obj.statsAddPause(&gc_st, host.rt_nanos() - t0);
     in_boundary = false;
@@ -1420,7 +1599,8 @@ pub export fn rt_gc_write_barrier(o: ?*anyopaque) void {
     writeBarrier(o);
 }
 pub export fn rt_gc_root_hint(p: ?*anyopaque) void {
-    logOp(@intFromPtr(p) | OP_ROOT);
+    // C logs a null as well, and the collector then reads the header at address 0.
+    if (p) |q| logOp(@intFromPtr(q) | OP_ROOT);
 }
 pub export fn rt_gc_free_later(p: ?*anyopaque) void {
     const q = p orelse return;
@@ -1443,18 +1623,18 @@ pub export fn rt_gc_collect() void {
     const t0 = host.rt_nanos();
     while (true) {
         const had = cur != null and (cur.?.n != 0 or cur.?.frees.len != 0);
-        handoff();
+        handoff(NO_DEADLINE);
         lock();
         while (q_head != null) waitDone();
         const want = full_done + 1;
         full_req = true;
         signalWork();
         while (full_done < want) waitDone();
-        obj.PtrStack.moveFrom(&ret_local, &ret_shared);
+        ret_local.splice(&ret_shared);
         m_applied = applied;
         unlock();
-        const returned = ret_local.len - ret_pos;
-        processReturns();
+        const returned = ret_local.n;
+        processReturns(NO_DEADLINE);
         if (!had and returned == 0 and !(cur != null and (cur.?.n != 0 or cur.?.frees.len != 0))) break;
     }
     freeHeld(true); // the queue is empty and every handed log applied
@@ -1465,6 +1645,14 @@ pub export fn rt_gc_collect() void {
 pub export fn rt_gc_name() [*:0]const u8 {
     return "epoch";
 }
+/// Tests: the freeing budget of a boundary (KX_GC_FREE_BUDGET_US); negative restores the default.
+pub fn debugSetFreeBudgetUs(us: i64) void {
+    free_budget_ns = us * 1000;
+}
+/// Tests: returned objects the mutator has not freed yet.
+pub fn debugReturnsPending() usize {
+    return ret_local.n;
+}
 pub export fn rt_gc_stats(out: *kx.Stats) void {
     lock();
     out.* = gc_st;
@@ -1474,7 +1662,7 @@ pub export fn rt_gc_stats(out: *kx.Stats) void {
 
 fn epochDebug() void {
     const mib = 1.0 / 1048576.0;
-    _ = std.c.printf("epoch: mem MiB slabs=%.2f logs=%lld(%.2f) stacks(cap) roots=%.2f deferred=%.2f live_def=%.2f work=%.2f black=%.2f marked=%.2f ret=%.2f ret-shared=%.2f ret-local=%.2f cw=%.2f dying=%.2f\n", @as(f64, @floatFromInt(dbg_slab_bytes)) * mib, @as(c_longlong, dbg_log_allocs), @as(f64, @floatFromInt(dbg_log_allocs * @sizeOf(Log))) * mib, capMib(&c_roots), capMib(&c_deferred), capMib(&c_live_def), capMib(&c_work), capMib(&c_black), capMib(&c_marked), capMib(&c_ret), capMib(&ret_shared), capMib(&ret_local), capMib(&cw_m) + capMib(&cw_ends), capMib(&c_dying));
+    _ = std.c.printf("epoch: mem MiB slabs=%.2f logs=%lld(%.2f) stacks(cap) roots=%.2f deferred=%.2f live_def=%.2f work=%.2f black=%.2f marked=%.2f ret-pending=%zu cw=%.2f dying=%.2f\n", @as(f64, @floatFromInt(dbg_slab_bytes)) * mib, @as(c_longlong, dbg_log_allocs), @as(f64, @floatFromInt(dbg_log_allocs * @sizeOf(Log))) * mib, capMib(&c_roots), capMib(&c_deferred), capMib(&c_live_def), capMib(&c_work), capMib(&c_black), capMib(&c_marked), c_ret.n + ret_shared.n + ret_local.n, capMib(&cw_m) + capMib(&cw_ends), capMib(&c_dying));
     _ = std.c.printf("epoch: threshold=%zu log_cap=%zu stable=%lld collections=%lld logs_handed=%llu alloc_cuts=%lld max_queued=%zu\n", c_threshold, log_cap.load(.monotonic), @as(c_longlong, c_stable_n), @as(c_longlong, gc_st.collections), @as(c_ulonglong, handed), @as(c_longlong, dbg_alloc_cuts), max_queued);
 }
 var dbg_alloc_cuts: i64 = 0;

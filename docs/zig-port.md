@@ -140,6 +140,60 @@ Known limits:
   is 22% higher than base because the backlog can reach the cap before a one-pass step.
 - wasm `shared_20k` has a single max pause well above its p99.
 
+## epoch: pauses, returned objects, slabs
+
+What differs from `epoch/gc.c` on the mutator side, and what the port had lost.
+
+- **Target pause.** `KX_GC_TARGET_PAUSE_US` defaults to 1000 here (C: 3000), and
+  `KX_GC_FREE_BUDGET_US` to half of it.
+- **Freeing budget.** The port had dropped the budget of C's `process_returns`: one boundary freed
+  everything the collector had returned. It is back: a boundary frees returned objects, a chunk
+  of 254 at a time, until half the target pause has passed since it began; allocations free the
+  rest, 2 to 16 per call.
+- **Back-pressure wait.** C waits until the queue is no longer than `KX_GC_MAX_QUEUED`, however
+  long the collector takes. Here the wait ends after 2/5 of the target pause; the mutator goes on
+  with a longer queue and meets the same wait at its next boundary, which throttles it to one log
+  per wait. Past 524288 queued entries (16 full logs, 4 MiB: what the adaptive queue may hold
+  anyway) the wait is unbounded again, so the queue cannot grow without limit. A wait that timed
+  out counts as one over the target for the adaptive queue depth.
+- **Returned objects** travel as a list of 2 KiB chunks, spliced under the lock in O(1) and freed
+  once their objects are. As three stacks (C), publishing copied the batch under the lock and each
+  stack kept the capacity of the largest batch ever (8 MiB apiece after a million deaths).
+  An object leaves the list before it is freed: freeing it can fill the log and run a boundary
+  that frees returned objects itself. The port advanced its cursor after the free, which freed
+  that object twice (latent while every boundary emptied the list).
+- **Slabs.** A slab emptied between two boundaries is reused by the next refill instead of
+  waiting for the boundary's flush, and a flush gives at most 64 slabs back to the system.
+  `gc-phases-epoch` took a new slab for each size class meanwhile: 309 MB, now 28 MB.
+- **MarkGray** records every object it grays (C `tw->marked`), not only the roots, so that all
+  are settled after the detection. Without it a cycle behind an edge the mutator removed between
+  MarkGray and Scan stayed gray with its CRC and was never examined again (`deferredLostEdge` in
+  `suite.zig`).
+- `rt_gc_root_hint(null)` logs nothing (C logs a null entry, which the collector dereferences);
+  `KX_GC_LOG_CAP` <= 0 is ignored, as in C.
+
+Not changed, and different from C: `c_traversed` counts objects MarkGray popped, C counts edges
+it followed; the adaptive thresholds were tuned with the port's count.
+
+`bench/native/drop.zig` (`gc-drop-epoch [live] [rounds] [churn]`) drops a chain of `live` objects
+at once and keeps allocating. Apple M3 Max under unrelated load (load average 20-30), minimum of
+interleaved runs, before → after:
+
+| bench | time, ns | max pause | peak MB |
+|---|---|---|---|
+| drop, 1M objects | 11.5 → 12.1 | 11.5 ms → 0.61 ms | 59.3 → 50.0 |
+| drop, 4M objects | 14.3 → 14.6 | 51 ms → 0.63 ms | 192 → 193 |
+| phases epoch | 11.5 → 4.5 | | 309 → 28.1 |
+| ops epoch alloc_drop | 9.49 → 9.36 | 72 µs → 77 µs | 6.7 → 6.6 |
+| ops epoch rc_pair / field_store / lru_move | 2.34 → 2.35 / 3.29 → 3.24 / 21.5 → 22.8 | | |
+
+A boundary can still take longer than the target when the system deschedules the thread: one run
+in ten of the 4M drop had a 1.3-1.6 ms boundary whose time was a single chunk of frees.
+
+The synchronous collectors cannot be bounded this way: `perceus` and `incremental` trace a live
+cyclic structure in the mutator (2.7-3.5 ms in `gc-cycles shared_200k`, about 200 ms with a
+million live objects in `gc-ops -Dbench-live=1048576`).
+
 ## Pool
 
 `src/common/regions.zig` keeps C's region API (`rt_alloc_trace` / `rt_free_trace`, 8-byte size
@@ -157,10 +211,15 @@ addresses, and generated code holds raw pointers, so an object can never be relo
   onto the class's free list. Neither touches a page header.
 - **Lazy reclaim.** When a class needs a page and the stock is empty, a walk of the free lists
   starts. It goes through one class at a time and sorts its blocks by page, at most 4096 blocks
-  per page taken, so no single allocation sorts a whole heap. A page whose blocks are all free
-  leaves its list for a stock that every class, and both pools, take pages from; the rest go back
-  grouped by page. A class whose list is unchanged since its last walk is skipped. While its list
-  is being walked, a class allocates from the blocks the walk has not reached yet.
+  per page taken, so no single allocation sorts a whole heap. A page goes to a stock that every
+  class, and both pools, take pages from as soon as its last block is sorted; the other pages go
+  back to the class, grouped by page, when its list is done. A class whose list is unchanged since
+  its last walk is skipped. While its list is being walked, a class allocates from the blocks the
+  walk has not reached yet, then takes the sorted blocks of its partly free pages back.
+  Emptied pages first waited for the end of their class's list: a class with 100000 free blocks
+  took 25 new pages from the system before its own came back, at every walk, and `gc-phases-rc`
+  grew with the number of rounds until every class held its peak (35 MB after 24 rounds, 80 MB
+  after 240; now 28 MB after either, natively and on wasm, and 10-20% less time).
   The next walk waits until the pages handed out since the last one began exceed, by 64 KiB, the
   bytes that walk left on the lists (a page the stock gives back to the class that emptied it
   counts as left), so walking costs at most one block per 8 bytes allocated.

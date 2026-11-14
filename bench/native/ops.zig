@@ -239,6 +239,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var st: kx.Stats = undefined;
     gc.rt_gc_stats(&st);
     _ = std.c.printf("%s pause_ms %.1f\n", gc.rt_gc_name(), @as(f64, @floatFromInt(st.pause_ns_total)) / 1e6);
+    _ = std.c.printf("%s pause_max_us %.1f\n", gc.rt_gc_name(), @as(f64, @floatFromInt(host.pausePercentileNs(1.0))) / 1e3);
+    _ = std.c.printf("%s pause_p99_us %.1f\n", gc.rt_gc_name(), @as(f64, @floatFromInt(host.pausePercentileNs(0.99))) / 1e3);
     // Peak RSS from this process (no argv-to-exec wrapper). Linux ru_maxrss is KiB;
     // host.peakRssKb normalizes Darwin bytes → KiB.
     _ = std.c.printf("%s peak_rss_kb %lld\n", gc.rt_gc_name(), @as(c_longlong, host.peakRssKb()));
