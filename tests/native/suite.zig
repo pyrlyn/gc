@@ -442,6 +442,139 @@ fn deferredPacedFree() void {
     gc.rt_gc_collect();
 }
 
+// Rings are made, rewired, shrunk and dropped (garbage cycles and plain deaths) while the collector
+// traces them, and the collector applies a queued log between any two objects it visits: counts,
+// colors and edges change under every phase of a detection, and objects die on its stacks. Each
+// object must be freed exactly once, and no ring may lose a node the program can still reach.
+const STRESS_SLOTS = 512;
+const STRESS_IDS = if (gc.caps.deferred) 1 << 21 else 0;
+var stress_state: [STRESS_IDS]u8 = @splat(0); // 1 live, 2 freed
+var stress_ids: usize = 0;
+var stress_freed: usize = 0;
+var stress_bad: usize = 0;
+fn stressFree(p: ?*anyopaque) callconv(.c) void {
+    const o: *Obj = @ptrCast(@alignCast(p));
+    const id: usize = @intCast(o.val);
+    if (id >= STRESS_IDS or stress_state[id] != 1) stress_bad += 1 else stress_state[id] = 2;
+    stress_freed += 1;
+    gc.rt_free_trace(p, @sizeOf(Obj));
+}
+var stress_vt: kx.VTab = .{ .rel = objRel, .trav = objTrav, .relo = objRelo, .freemem = stressFree, .cyclic = @ptrFromInt(1) };
+
+fn stressNew() *Obj {
+    const o = newObj(@intCast(stress_ids));
+    o.vt = &stress_vt;
+    stress_state[stress_ids] = 1;
+    stress_ids += 1;
+    return o;
+}
+/// `o.next = v`, as compiled code does it under deferred RC.
+fn stressStore(o: *Obj, v: *Obj) void {
+    gc.rt_gc_log_inc(v);
+    const old = o.next;
+    @atomicStore(?*Obj, &o.next, v, .release);
+    gc.rt_gc_write_barrier(o);
+    gc.rt_gc_log_dec(old);
+}
+/// A ring of `n`; the caller owns one reference to the node returned.
+fn stressRing(n: usize) *Obj {
+    const first = stressNew();
+    var last = first;
+    for (1..n) |_| {
+        const x = stressNew();
+        @atomicStore(?*Obj, &last.next, x, .release); // takes over the new object's reference
+        gc.rt_gc_write_barrier(last);
+        last = x;
+    }
+    gc.rt_gc_log_inc(first);
+    @atomicStore(?*Obj, &last.next, first, .release);
+    gc.rt_gc_write_barrier(last);
+    return first;
+}
+fn stressCheck(head: *Obj, len: usize) void {
+    var x = head;
+    for (0..len) |_| {
+        const id: usize = @intCast(x.val);
+        if (id >= STRESS_IDS or stress_state[id] != 1) {
+            stress_bad += 1;
+            return;
+        }
+        x = x.next orelse {
+            stress_bad += 1;
+            return;
+        };
+    }
+    if (x != head) stress_bad += 1;
+}
+
+fn deferredStress(poll_steps: u32, major: bool, iters: usize) void {
+    if (comptime !@hasDecl(gc, "debugSetPollSteps")) return;
+    gc.rt_gc_collect();
+    gc.debugSetPollSteps(poll_steps);
+    gc.debugForceMajor(major);
+    const ids0 = stress_ids;
+    const freed0 = stress_freed;
+    var heads: [STRESS_SLOTS]*Obj = undefined;
+    var lens: [STRESS_SLOTS]usize = undefined;
+    for (&heads, &lens, 0..) |*h, *l, i| {
+        l.* = 1 + i % 7;
+        h.* = stressRing(l.*);
+    }
+    var rnd: u64 = @as(u64, 0x9e3779b97f4a7c15) +% poll_steps;
+    for (0..iters) |it| {
+        rnd = rnd *% 6364136223846793005 +% 1442695040888963407;
+        const i: usize = @intCast((rnd >> 33) % STRESS_SLOTS);
+        const head = heads[i];
+        switch ((rnd >> 20) & 7) {
+            0 => { // drop the ring: a garbage cycle
+                lens[i] = 1 + @as(usize, @intCast((rnd >> 12) & 7));
+                heads[i] = stressRing(lens[i]);
+                gc.rt_gc_log_dec(head);
+            },
+            1, 2 => if (lens[i] > 1) { // unlink the node after the head: it dies, and releases its successor
+                stressStore(head, head.next.?.next.?);
+                lens[i] -= 1;
+            },
+            3, 4 => { // insert a node after the head
+                const n = stressNew();
+                const z = head.next.?;
+                gc.rt_gc_log_inc(z);
+                @atomicStore(?*Obj, &n.next, z, .release);
+                gc.rt_gc_write_barrier(n);
+                stressStore(head, n);
+                gc.rt_gc_log_dec(n);
+                lens[i] += 1;
+            },
+            5 => { // the slot moves on to the next node
+                const nh = head.next.?;
+                gc.rt_gc_log_inc(nh);
+                heads[i] = nh;
+                gc.rt_gc_log_dec(head);
+            },
+            6 => {
+                gc.rt_gc_log_inc(head);
+                gc.rt_gc_root_hint(head);
+                gc.rt_gc_log_dec(head);
+            },
+            else => stressCheck(head, lens[i]),
+        }
+        if (it % 65536 == 65535) for (heads, lens) |h, l| stressCheck(h, l);
+    }
+    for (heads, lens) |h, l| stressCheck(h, l);
+    gc.rt_gc_collect();
+    for (heads, lens) |h, l| stressCheck(h, l);
+    var live: usize = 0;
+    for (lens) |l| live += l;
+    check(stress_ids - ids0 - (stress_freed - freed0) == live, "stress: exactly the reachable rings are left");
+    for (heads) |h| gc.rt_gc_log_dec(h);
+    var k: u32 = 0;
+    while (k < 4) : (k += 1) gc.rt_gc_collect();
+    check(stress_freed - freed0 == stress_ids - ids0, "stress: every object freed");
+    check(stress_bad == 0, "stress: no object freed twice or while reachable");
+    gc.debugSetPollSteps(0);
+    gc.debugForceMajor(false);
+}
+
 const FANOUT = 64;
 const Node = extern struct {
     hdr: u64,
@@ -499,7 +632,12 @@ fn traversal(count: usize) void {
     nodes[count - 1].hdr += 1;
     gc.rt_cc_possible_root(nodes[0]);
     gc.rt_gc_collect();
-    check(!@as(bool, node_freed != 0 or node_released != 0) and node_visits == 3 * count - 1, "live ring restored");
+    // perceus: MarkGray, Scan and ScanBlack each traverse the ring (the root once less). incremental
+    // counts without touching the counts, so nothing is restored: mark, then scan from the node
+    // with the outside reference.
+    const stepped = std.mem.eql(u8, std.mem.span(gc.rt_gc_name()), "incremental");
+    const live_visits = if (stepped) 2 * count else 3 * count - 1;
+    check(!@as(bool, node_freed != 0 or node_released != 0) and node_visits == live_visits, "live ring restored");
     i = 0;
     while (i < count) : (i += 1) {
         check(gc.debugRefCount(nodes[i]) == FANOUT + @as(u64, if (i == count - 1) 1 else 0), "ring count");
@@ -508,7 +646,8 @@ fn traversal(count: usize) void {
     nodes[count - 1].hdr -= 1;
     gc.rt_cc_possible_root(nodes[0]);
     gc.rt_gc_collect();
-    check(node_freed == count and node_released == count and node_visits == 6 * count - 1, "garbage ring");
+    // perceus: MarkGray, Scan, CollectWhite. incremental: mark, the batch's count, the release.
+    check(node_freed == count and node_released == count and node_visits == live_visits + 3 * count, "garbage ring");
     const a = nodeNew();
     const b = nodeNew();
     const c = nodeNew();
@@ -580,14 +719,13 @@ fn onePass() void {
     check(local_freed == ROOTS and (ring[0].hdr & kx.CNT_MASK) == 2 and trav_calls <= MAX_TRAV, "one_pass");
 }
 
-/// tests/incremental/slice_black.kt without newkotlinc: a later slice's root that a bounded step
-/// scans black is live and leaves the buffer at the end of the step, so its release later frees it
-/// exactly once (left BLACK in the buffer, a step started mid-release would free it as dead).
+/// tests/incremental/slice_black.kt without newkotlinc: a root the collector found live leaves the
+/// buffer, so its release later frees it exactly once (left in the buffer with the color cleared, a
+/// step started mid-release would take it for dead and free it under the release). Run in steps of
+/// one object.
 fn sliceBlackRoot() void {
-    if (!@hasDecl(gc, "debugSetFixedSlice")) return;
+    if (!@hasDecl(gc, "debugSetStepUnits")) return;
     gc.rt_gc_collect();
-    gc.debugSetFixedSlice(1);
-    defer gc.debugSetFixedSlice(0);
     freed = 0;
     const x = newObj(3);
     const r = newObj(2);
@@ -599,16 +737,225 @@ fn sliceBlackRoot() void {
     gc.rt_cc_possible_root(a);
     r.hdr += 1;
     objRel(r); // back to 1: r is the second buffered root
-    check(gc.rt_gc_idle_step(1_000_000) == 0, "one-slice step drops the live black root");
-    check(!gc.debugIsBuffered(r) and gc.debugColor(r) == kx.BLACK and countOf(r) == 1 and freed == 0, "slice-black root restored, unbuffered");
+    gc.debugSetStepUnits(1);
+    var steps: usize = 0;
+    while (gc.rt_gc_idle_step(1_000_000) != 0) steps += 1;
+    gc.debugSetStepUnits(0);
+    check(steps > 4, "a cycle takes several one-object steps");
+    check(!gc.debugIsBuffered(r) and gc.debugColor(r) == kx.BLACK and countOf(r) == 1 and freed == 0, "live root restored, unbuffered");
+    check(gc.debugCycleBits(r) == 0 and gc.debugCycleBits(a) == 0 and gc.debugCycleBits(x) == 0, "cycle bits cleared");
     a.next = null;
     objRel(r);
-    check(freed == 1, "slice-black root freed once");
+    check(freed == 1, "live root freed once");
     objRel(a);
     objRel(a);
     objRel(x);
     gc.rt_gc_collect();
-    check(freed == 3, "slice-black cleanup");
+    check(freed == 3, "live root cleanup");
+}
+
+// A random graph of three-field objects is rewired while the collector runs in steps of a few
+// objects: at every possible root (so also in the middle of a release, with objects up the stack at
+// count zero and half released) and between operations. References are copied, dropped, and moved
+// between fields and the root table without touching a count. A model of the root table says what
+// is reachable: nothing reachable may be freed, every count must equal the references the model
+// finds, and a full collection must leave exactly the reachable objects.
+const Tri = extern struct { hdr: u64, vt: *kx.VTab, e: [3]?*Tri, id: i64 };
+const TRI_IDS = if (@hasDecl(gc, "debugSetStepUnits")) 1 << 20 else 0;
+const TRI_ROOTS = 96;
+var tri_obj: [TRI_IDS]?*Tri = @splat(null); // null once freed
+var tri_seen: [TRI_IDS]u32 = @splat(0);
+var tri_refs: [TRI_IDS]u32 = @splat(0);
+var tri_ids: usize = 0;
+var tri_live: usize = 0;
+var tri_bad: usize = 0;
+var tri_pass: u32 = 0;
+var tri_roots: [TRI_ROOTS]?*Tri = @splat(null);
+var tri_queue: [TRI_IDS]u32 = undefined;
+
+fn triFree(p: ?*anyopaque) callconv(.c) void {
+    const o: *Tri = @ptrCast(@alignCast(p));
+    const id: usize = @bitCast(@as(isize, @intCast(o.id)));
+    if (id >= tri_ids or tri_obj[id] != o) tri_bad += 1 else {
+        tri_obj[id] = null;
+        tri_live -= 1;
+    }
+    // A collector that reads a freed object fails loudly.
+    o.id = -1;
+    o.e = @splat(@ptrFromInt(8));
+    gc.rt_free_trace(p, @sizeOf(Tri));
+}
+fn triTrav(p: ?*anyopaque, f: ?kx.VisitFn) callconv(.c) void {
+    const o: *Tri = @ptrCast(@alignCast(p));
+    for (o.e) |c| f.?(c);
+}
+fn triRelo(_: ?*anyopaque) callconv(.c) void {}
+fn triRel(p: ?*anyopaque) callconv(.c) void {
+    const o: *Tri = @ptrCast(@alignCast(p orelse return));
+    const c1 = o.hdr -% 1;
+    if (c1 & kx.CNT_MASK != 0) {
+        o.hdr = c1 | (@as(u64, 3) << kx.COLOR_SHIFT);
+        if (c1 & kx.BUF_BIT == 0) gc.rt_cc_possible_root(p);
+        return;
+    }
+    o.hdr = c1;
+    for (o.e) |c| triRel(c);
+    if (o.hdr & kx.BUF_BIT != 0) {
+        o.hdr &= ~(@as(u64, 3) << kx.COLOR_SHIFT);
+        return;
+    }
+    triFree(p);
+}
+var tri_vt: kx.VTab = .{ .rel = triRel, .trav = triTrav, .relo = triRelo, .freemem = triFree, .cyclic = @ptrFromInt(1) };
+
+fn triNew() ?*Tri {
+    if (tri_ids == TRI_IDS) return null;
+    const o: *Tri = @ptrCast(@alignCast(gc.rt_alloc_trace(@sizeOf(Tri)).?));
+    o.* = .{ .hdr = 1, .vt = &tri_vt, .e = @splat(null), .id = @intCast(tri_ids) };
+    tri_obj[tri_ids] = o;
+    tri_ids += 1;
+    tri_live += 1;
+    return o;
+}
+/// Walks what the root table reaches; returns how many objects, 0 after finding a freed one.
+/// `exact`: every count equals the references found, and no object is buffered or held.
+fn triCheck(exact: bool) usize {
+    tri_pass += 1;
+    var n: usize = 0;
+    var head: usize = 0;
+    const visit = struct {
+        fn f(p: ?*Tri, tail: *usize) bool {
+            const o = p orelse return true;
+            const id: usize = @bitCast(@as(isize, @intCast(o.id)));
+            if (id >= tri_ids or tri_obj[id] != o) return false;
+            if (tri_seen[id] != tri_pass) {
+                tri_seen[id] = tri_pass;
+                tri_refs[id] = 0;
+                tri_queue[tail.*] = @intCast(id);
+                tail.* += 1;
+            }
+            tri_refs[id] += 1;
+            return true;
+        }
+    }.f;
+    for (tri_roots) |r| if (!visit(r, &n)) return 0;
+    while (head < n) : (head += 1) {
+        const o = tri_obj[tri_queue[head]].?;
+        for (o.e) |c| if (!visit(c, &n)) return 0;
+    }
+    if (exact) for (tri_queue[0..n]) |id| {
+        const o = tri_obj[id].?;
+        if (countOf(@ptrCast(o)) != tri_refs[id] or gc.debugIsBuffered(o) or gc.debugCycleBits(o) != 0) return 0;
+    };
+    return n + 1;
+}
+
+fn steppedStress(units: usize, live_max: usize, iters: usize) void {
+    if (comptime !@hasDecl(gc, "debugSetStepUnits")) return;
+    gc.rt_gc_collect();
+    gc.debugSetStepUnits(units);
+    const bad0 = tri_bad;
+    var rnd: u64 = @as(u64, 0x9e3779b97f4a7c15) *% (units + 1);
+    for (0..iters) |it| {
+        rnd = rnd *% 6364136223846793005 +% 1442695040888963407;
+        const i: usize = @intCast((rnd >> 33) % TRI_ROOTS);
+        const j: usize = @intCast((rnd >> 41) % TRI_ROOTS);
+        const k: usize = @intCast((rnd >> 50) % 3);
+        const l: usize = @intCast((rnd >> 53) % 3);
+        const a = tri_roots[i];
+        const b = tri_roots[j];
+        switch ((rnd >> 16) % 16) {
+            0, 1 => if (tri_live < live_max) { // a new object in the slot
+                tri_roots[i] = triNew();
+                triRel(a);
+            },
+            2, 3 => if (a) |x| { // a.e[k] = b
+                if (b) |y| y.hdr += 1;
+                const old = x.e[k];
+                x.e[k] = b;
+                triRel(old);
+            },
+            4 => if (a) |x| { // a.e[k] = b and b.e[l] = a: a cycle (a loop when the slots share an object)
+                if (b) |y| {
+                    y.hdr += 1;
+                    const old = x.e[k];
+                    x.e[k] = y;
+                    triRel(old);
+                    x.hdr += 1;
+                    const old2 = y.e[l];
+                    y.e[l] = x;
+                    triRel(old2);
+                }
+            },
+            5, 6 => if (a) |x| { // the slot moves on to a field of its object
+                const nx = x.e[k];
+                if (nx) |y| y.hdr += 1;
+                tri_roots[i] = nx;
+                triRel(x);
+            },
+            7 => { // drop the slot
+                tri_roots[i] = null;
+                triRel(a);
+            },
+            8, 9 => if (a) |x| { // a field's reference moves out to an empty slot: no count changes
+                if (b == null) {
+                    tri_roots[j] = x.e[k];
+                    x.e[k] = null;
+                }
+            },
+            10, 11 => if (a) |x| { // a slot's reference moves into an empty field of another object
+                if (b) |y| if (x != y and y.e[l] == null) {
+                    y.e[l] = x;
+                    tri_roots[i] = null;
+                };
+            },
+            12 => if (a) |x| { // a field's reference moves to an empty field of another object
+                if (b) |y| if (y.e[l] == null) {
+                    y.e[l] = x.e[k];
+                    x.e[k] = null;
+                };
+            },
+            13 => if (a) |x| { // a.e[k] = a.e[l].e[k]
+                const v: ?*Tri = if (x.e[l]) |y| y.e[k] else null;
+                if (v) |y| y.hdr += 1;
+                const old = x.e[k];
+                x.e[k] = v;
+                triRel(old);
+            },
+            14 => _ = gc.rt_gc_idle_step(1_000_000),
+            else => if (a) |x| {
+                x.hdr += 1;
+                gc.rt_gc_root_hint(x);
+                triRel(x);
+            },
+        }
+        if ((rnd >> 8) & 3 == 0) _ = gc.rt_gc_idle_step(1_000_000);
+        if (it % 512 == 511 and triCheck(false) == 0) {
+            tri_bad += 1;
+            break;
+        }
+        if (it % 8192 == 8191) {
+            gc.rt_gc_collect();
+            const n = triCheck(true);
+            if (n == 0 or n - 1 != tri_live) {
+                tri_bad += 1;
+                break;
+            }
+        }
+    }
+    gc.rt_gc_collect();
+    const n = triCheck(true);
+    check(n != 0 and n - 1 == tri_live, "stepped stress: exactly the reachable objects are left, counts exact");
+    for (&tri_roots) |*r| {
+        const o = r.*;
+        r.* = null;
+        triRel(o);
+    }
+    gc.rt_gc_collect();
+    check(tri_live == 0, "stepped stress: every object freed");
+    check(tri_bad == bad0, "stepped stress: no object freed twice or while reachable");
+    check(gc.debugHeldDead() == 0, "stepped stress: no freed memory kept after the last cycle");
+    gc.debugSetStepUnits(0);
 }
 
 /// regions.zig pool: a page whose last block is freed goes to a stock that other size classes take
@@ -683,6 +1030,11 @@ pub fn main() u8 {
         deferredSizes();
         deferredLostEdge();
         deferredPacedFree();
+        deferredStress(1, false, 150_000);
+        deferredStress(2, true, 150_000);
+        deferredStress(3, false, 150_000);
+        deferredStress(0, false, 400_000);
+        deferredStress(0, true, 400_000);
     } else {
         acyclicChain();
         sharedSurvives();
@@ -697,6 +1049,10 @@ pub fn main() u8 {
         if (std.mem.eql(u8, gname, "incremental")) {
             onePass();
             sliceBlackRoot();
+            steppedStress(1, 200, 200_000);
+            steppedStress(3, 400, 200_000);
+            steppedStress(17, 3000, 300_000);
+            steppedStress(1000, 3000, 300_000);
         }
     }
     var st: kx.Stats = undefined;

@@ -38,7 +38,7 @@ linked into every program.
 | `--gc=` | Implementation | Cycles | Notes |
 |---|---|---|---|
 | `perceus` | [`perceus/gc.c`](perceus/gc.c) | collected | Perceus-style RC + synchronous trial-deletion cycle collector over the tracing region (Bacon & Rajan). The original built-in GC, unchanged; it was named `default` until epoch became the default. |
-| `incremental` | [`incremental/gc.c`](incremental/gc.c) | collected | `perceus` with the root buffer processed in slices of 64 under a per-step time budget (`KX_GC_BUDGET_US`, default 500 us); falls back to one pass when a single slice already exceeds the budget. The Zig port ([`src/incremental.zig`](src/incremental.zig)) sizes slices from a fitted cost model instead and also runs as wasm32-wasi under JS ([docs/zig-port.md](docs/zig-port.md#incremental-scheduler)). |
+| `incremental` | [`incremental/gc.c`](incremental/gc.c) | collected | `perceus` with the root buffer processed in slices of 64 under a per-step time budget (`KX_GC_BUDGET_US`, default 500 us); falls back to one pass when a single slice already exceeds the budget. The Zig port ([`src/incremental.zig`](src/incremental.zig)) is another algorithm: trial deletion that leaves the counts alone and runs between any two objects of its work, so a step stays within the budget whatever the size of the live graph; it also runs as wasm32-wasi under JS ([docs/zig-port.md](docs/zig-port.md#incremental-interleaved-trial-deletion)). |
 | `epoch` | [`epoch/gc.c`](epoch/gc.c) | collected | **Default** (also `--gc=default`). Deferred RC for possibly cyclic objects: the program logs reference operations per epoch, a background thread applies them and runs concurrent cycle detection with Delta/Sigma validation. See [`docs/architecture.md`](docs/architecture.md#7-epoch-collector-deferred-rc-background-cycle-collection). |
 | `rc` | [`rc/gc.c`](rc/gc.c) | leak | Same RC and regions, no cycle collector. Baseline for the collector's cost. |
 
@@ -87,8 +87,8 @@ Paired Mac Zig timings are not in this repo yet. Linux VM logs are not Mac.
 | `NEWKOTLIN_GC` | compile | default for `--gc` (unset: `epoch`) |
 | `NEWKOTLIN_GC_DIR` | compile | directory with implementations |
 | `KX_GC_STATS=1` | run | print GC statistics to stderr at exit |
-| `KX_GC_BUDGET_US` | run | per-step budget of `incremental` (default 500) |
-| `KX_GC_FREE_BUDGET_US` | run | `epoch`: freeing budget per epoch boundary (default half of `KX_GC_TARGET_PAUSE_US`: 1500; in the Zig port the target defaults to 1000, so 500) |
+| `KX_GC_BUDGET_US` | run | per-step budget of `incremental` (default 500). In the Zig port a step is the budget plus one batch of candidates, see [docs/zig-port.md](docs/zig-port.md#incremental-interleaved-trial-deletion) |
+| `KX_GC_FREE_BUDGET_US` | run | `epoch`: freeing budget per epoch boundary (default half of `KX_GC_TARGET_PAUSE_US`: 1500; in the Zig port a quarter of the target, which defaults to 1000: 250) |
 | `KX_GC_THREADS` | run | `epoch`: collector threads (default min(cores, 4)) |
 | `KX_GC_MAX_QUEUED` | run | `epoch`: logs the collector may lag before the program waits (default: adaptive, 2-16) |
 | `KX_GC_EXIT_DRAIN` | run | `epoch`: `1` drains the queue at exit in any build |

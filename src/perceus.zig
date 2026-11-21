@@ -8,7 +8,7 @@ const td_mod = @import("common/trial_deletion.zig");
 pub const name = "perceus";
 pub const caps = .{ .cycles = true, .precise = true, .asan = true, .deferred = false };
 
-const TD = td_mod.TrialDeletion(true, false);
+const TD = td_mod.TrialDeletion(true);
 var td = TD{};
 var cc_roots = obj.PtrStack{};
 var cc_running: bool = false;
