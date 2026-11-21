@@ -247,6 +247,11 @@ const Pages = struct {
 
 var pages = Pages{};
 
+/// Called when a class needs a page and the stock has none: the pool walks its free lists or takes
+/// memory from the system next. A collector may free blocks first; what it allocates from the pools
+/// meanwhile comes back here.
+pub var grow_hook: ?*const fn () void = null;
+
 const POOLS: usize = if (rc_pooled) 2 else 1;
 const NO_CLASS = std.math.maxInt(usize);
 
@@ -301,6 +306,10 @@ const Pool = struct {
     noinline fn refill(id: usize, cls: usize) void {
         const i = id * RT_CLASSES + cls - 1;
         const c = classAt(i);
+        if (pages.empty == null) if (grow_hook) |hook| {
+            hook();
+            if (c.free != null or @intFromPtr(c.end) - @intFromPtr(c.ptr) >= cls << RT_SIZE_CLASS_SHIFT) return;
+        };
         // A walk holds this class's free blocks: use those it has not sorted yet. A block taken
         // there is live when the walk counts its page.
         if (pages.class == i) {
@@ -358,7 +367,7 @@ pub inline fn rtFreeTrace(p: ?*anyopaque, size: i64) void {
     if (p) |q| trace_pool.free(q, size);
 }
 
-/// For tests and benches: pool pages carved from the system so far.
+/// Pool pages carved from the system so far.
 pub fn debugPoolPages() usize {
     return pages.carved;
 }

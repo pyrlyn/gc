@@ -8,6 +8,7 @@
 //! Each iteration builds a garbage 2-cycle a <-> b and drops it (one possible root). With a live
 //! ring of L objects, `a` also points into the ring, so trial deletion from `a` re-traces the ring:
 //! the cost of a slice is then dominated by the graph its roots share, not by the roots themselves.
+//! The `ring_<L>` scenarios (`runRing`) measure the other bound: one garbage structure of L objects.
 const std = @import("std");
 const gc = @import("collector");
 const kx = @import("kxgc");
@@ -56,15 +57,60 @@ fn newObj(v: i64) *Obj {
     return o;
 }
 
-const Scenario = struct { name: [:0]const u8, live: usize };
+const Scenario = struct { name: [:0]const u8, live: usize, ring: usize = 0 };
 const scenarios = [_]Scenario{
     .{ .name = "garbage", .live = 0 }, // independent garbage cycles
     .{ .name = "shared_1k", .live = 1_000 }, // roots share a small live graph
     .{ .name = "shared_20k", .live = 20_000 }, // shared live graph ~ one budget per trace
     .{ .name = "shared_200k", .live = 200_000 }, // shared graph far over budget per trace
+    // One garbage ring at a time: the largest structure the collector has to check in one piece.
+    .{ .name = "ring_10k", .live = 0, .ring = 10_000 },
+    .{ .name = "ring_100k", .live = 0, .ring = 100_000 },
+    .{ .name = "ring_1m", .live = 0, .ring = 1_000_000 },
 };
 
+/// `n` objects in garbage rings of `s.ring`, each collected in steps of 500 us before the next is
+/// built, the way a host with idle time runs the collector: the longest step is the check of a ring.
+fn runRing(s: Scenario, n: usize) void {
+    freed = 0;
+    const rounds = @max(1, n / s.ring);
+    var before: kx.Stats = undefined;
+    gc.rt_gc_stats(&before);
+    const t0 = host.rt_nanos();
+    for (0..rounds) |_| {
+        const first = newObj(0);
+        var last = first;
+        for (1..s.ring) |i| {
+            const o = newObj(@intCast(i));
+            last.next = o; // takes o's reference
+            last = o;
+        }
+        last.next = first;
+        first.hdr += 1;
+        objRel(first); // the ring is unreachable: one possible root
+        if (comptime @hasDecl(gc, "rt_gc_idle_step")) {
+            while (gc.rt_gc_idle_step(500) != 0) {}
+        } else gc.rt_gc_collect();
+    }
+    const t = host.rt_nanos() - t0;
+    var st: kx.Stats = undefined;
+    gc.rt_gc_stats(&st);
+    const ok = freed == rounds * s.ring;
+    _ = std.c.printf(
+        "%s %s ns_per_obj %.1f collections %lld pause_max_us %.1f pause_p99_us %.1f freed_ok %d\n",
+        gc.rt_gc_name(),
+        s.name.ptr,
+        @as(f64, @floatFromInt(t)) / @as(f64, @floatFromInt(rounds * s.ring)),
+        @as(c_longlong, st.collections - before.collections),
+        @as(f64, @floatFromInt(st.pause_ns_max)) / 1e3,
+        @as(f64, @floatFromInt(host.pausePercentileNs(0.99))) / 1e3,
+        @as(c_int, @intFromBool(ok)),
+    );
+    if (!ok) host.rt_panic("cycles bench: garbage not reclaimed");
+}
+
 fn run(s: Scenario, n: usize) void {
+    if (s.ring != 0) return runRing(s, n);
     var ring: []*Obj = &.{};
     if (s.live != 0) {
         const raw = gc.rt_gc_mem_alloc(@sizeOf(*Obj) * s.live).?;

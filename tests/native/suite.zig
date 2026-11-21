@@ -958,6 +958,93 @@ fn steppedStress(units: usize, live_max: usize, iters: usize) void {
     gc.debugSetStepUnits(0);
 }
 
+/// 200-byte blocks, a size class no other test uses: the pool has to grow for them.
+const Filler = extern struct { zero: u64, next: ?*Filler, pad: [184]u8 };
+
+/// Allocates until the collector has brought `tri_live` down to `target`, 64 MiB at most.
+fn fillUntil(target: usize, head: *?*Filler) void {
+    var n: usize = 0;
+    while (tri_live != target and n < (64 << 20) / @sizeOf(Filler)) : (n += 1) {
+        const f: *Filler = @ptrCast(@alignCast(gc.rt_alloc_trace(@sizeOf(Filler)).?));
+        f.zero = 0;
+        f.next = head.*;
+        head.* = f;
+    }
+}
+
+/// incremental: an object a cycle found live is old. Minor cycles stop at old objects and leave
+/// their roots, and the roots that reached one, to major cycles; a major cycle is started by the
+/// roots deferred or by the heap's growth, which also frees the deferred roots that died.
+fn generations() void {
+    if (comptime !@hasDecl(gc, "debugDeferredLen")) return;
+    gc.rt_gc_collect();
+    const live0 = tri_live;
+    const bad0 = tri_bad;
+    var fill: ?*Filler = null;
+    // o1 <-> o2, o1 held from outside as well.
+    const o1 = triNew().?;
+    const o2 = triNew().?;
+    o1.e[0] = o2;
+    o2.e[0] = o1;
+    o1.hdr += 2;
+    triRel(o1);
+    gc.rt_gc_collect();
+    check(tri_live == live0 + 2 and !gc.debugIsBuffered(o1) and gc.debugDeferredLen() == 0, "live cycle left unbuffered");
+    // y1 <-> y2 is garbage and refers to o1.
+    const y1 = triNew().?;
+    const y2 = triNew().?;
+    y1.e[0] = y2;
+    y2.e[0] = y1;
+    y1.e[1] = o1;
+    o1.hdr += 1;
+    y1.hdr += 1;
+    triRel(y1);
+    _ = gc.rt_gc_idle_step(1_000_000);
+    check(tri_live == live0 + 2 and gc.debugDeferredLen() == 0, "a minor cycle frees young garbage that refers to an old object");
+    check(gc.debugIsBuffered(o1) and countOf(@ptrCast(o1)) == 2, "its reference to the old object is released");
+    check(gc.rt_gc_idle_step(1_000_000) == 1 and gc.debugDeferredLen() == 1 and gc.debugIsBuffered(o1), "an old root waits for a major cycle");
+    // The last reference from outside: o1 is buffered, so the collector is not told. Only the
+    // heap's growth makes the major cycle due.
+    triRel(o1);
+    check(tri_live == live0 + 2, "old garbage waits");
+    fillUntil(live0, &fill);
+    check(tri_live == live0 and gc.debugDeferredLen() == 0, "the heap's growth starts a major cycle");
+    // A live young root that refers to an old object is deferred: it may be garbage through it.
+    const o = triNew().?;
+    o.hdr += 1;
+    triRel(o);
+    gc.rt_gc_collect();
+    const y = triNew().?;
+    y.e[0] = o;
+    o.hdr += 1;
+    y.hdr += 1;
+    triRel(y);
+    check(gc.rt_gc_idle_step(1_000_000) == 1 and gc.debugIsBuffered(y) and gc.debugDeferredLen() == 1, "a root that reached an old object is deferred");
+    check(gc.debugColor(y) == kx.PURPLE and gc.debugCycleBits(y) == 0 and countOf(@ptrCast(y)) == 1, "deferred root colored as a buffered one");
+    o.e[0] = y; // takes the reference held here: y <-> o
+    triRel(o);
+    check(tri_live == live0 + 2, "garbage through an old object waits");
+    while (gc.rt_gc_idle_step(1_000_000) != 0) {}
+    check(tri_live == live0 and gc.debugDeferredLen() == 0, "a major cycle collects garbage through an old object");
+    // An old root that dies while deferred keeps its memory until the heap grows.
+    const z = triNew().?;
+    z.hdr += 2;
+    triRel(z);
+    gc.rt_gc_collect();
+    triRel(z);
+    check(gc.rt_gc_idle_step(1_000_000) == 1 and gc.debugDeferredLen() == 1, "old root deferred");
+    triRel(z);
+    check(tri_live == live0 + 1, "a root that died while deferred is the collector's");
+    fillUntil(live0, &fill);
+    check(tri_live == live0 and gc.debugDeferredLen() == 0, "the heap's growth frees dead deferred roots");
+    check(tri_bad == bad0, "generations: nothing freed twice");
+    while (fill) |f| {
+        fill = f.next;
+        gc.rt_free_trace(f, @sizeOf(Filler));
+    }
+    gc.rt_gc_collect();
+}
+
 /// regions.zig pool: a page whose last block is freed goes to a stock that other size classes take
 /// pages from, never a page that still holds a live block; the free blocks of a page that does
 /// serve its own class again.
@@ -1049,6 +1136,7 @@ pub fn main() u8 {
         if (std.mem.eql(u8, gname, "incremental")) {
             onePass();
             sliceBlackRoot();
+            generations();
             steppedStress(1, 200, 200_000);
             steppedStress(3, 400, 200_000);
             steppedStress(17, 3000, 300_000);
