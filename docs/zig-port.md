@@ -69,14 +69,14 @@ Paired Mac numbers for SHA `31bdbcf` live on the runner at
 | `common/trial_deletion.inc` | yes |
 | `rc/gc.c` | yes |
 | `perceus/gc.c` | yes |
-| `incremental/gc.c` | yes, with its own step scheduler (see below) |
+| `incremental/gc.c` | its interface and tests; the collector is another algorithm (see below) |
 | `epoch/gc.c` logs, CRC TD, Sigma/Delta, generations, drain | yes |
 | epoch slab-release allocator (default on, `KX_GC_SLAB_RELEASE=0` restores bump/free-list) | yes (serial) |
 | `tests/archive/unit/gc_unit.c` | yes (native) |
 | `tests/zig/src/unit/api_test.zig` | yes (native) |
 | `tests/archive/unit/traversal.c` | yes (perceus / incremental) |
 | `tests/archive/incremental/one_pass.c` | yes |
-| `tests/incremental/slice_black.kt` scenario | yes (hand-built graph in `suite.zig`) |
+| `tests/incremental/slice_black.kt` scenario | yes (hand-built graph in `suite.zig`, stepped one object at a time) |
 | `bench/ops/ops.c` | yes |
 
 ## Remaining / unportable (not silently dropped)
@@ -92,70 +92,125 @@ Paired Mac numbers for SHA `31bdbcf` live on the runner at
 | `RT_LEAKCHECK` / ASan region tags | Compiler-driven. |
 | KotlinX `runtime.c` | Lives in pyrlyn/kotlinx. Host stub matches its clock on macOS. |
 
-## incremental scheduler
+## incremental: interleaved trial deletion
 
-`src/incremental.zig` keeps C's trial deletion but schedules steps differently; the C file is
-unchanged. Details are in the header comment of `src/incremental.zig`.
+`src/incremental.zig` keeps the interface and the tests of `incremental/gc.c`, not its algorithm;
+the C file is unchanged. C runs MarkRoots / ScanRoots / CollectRoots over a slice of the root
+buffer and subtracts the internal references from the counts themselves, so a slice has to trace
+everything its roots reach, and restore it, before the program may run again: one root in front
+of a million live objects was a pause of 170-340 ms, whatever the budget. The port:
 
-- **Slice size from a cost model.** Slices are sized from `t = fixed + per_root * n`, fitted
-  from the slices already run, instead of C's fixed 64 roots. `fixed` is the live graph the roots
-  share, which every slice re-traces; slices grow until that cost is amortized.
-- **Stopping and one-pass rules.** A step stops before a slice predicted to cross the budget.
-  When the shared graph alone is over the budget, a step runs one slice with as much root work as
-  the graph costs, instead of one pass whose pause grows with the buffer.
-- **Rescanning.** The live-black rescan of left-over roots runs only when the step blackened a
-  buffered root (`TrialDeletion.blackened_buffered`). C rescans the whole backlog after every
-  bounded step.
-- **Buffer handling.** The buffer is consumed in place from `cc_head`, with no copying or
-  reallocation per bounded step.
-- **Pacing.** An unfinished step resumes after half as many new roots as it processed.
-- **Threshold.** The threshold adapts once per cycle, when the buffer empties, not once per step.
-- **`rt_gc_idle_step(budget_us)`** is not in `kxgc.h`. It runs one bounded step with the caller's
-  budget (e.g. JS `requestIdleCallback`) and returns the roots still buffered.
+- **Counts are never modified.** A cycle takes the roots buffered so far (`take`), counts in
+  header bits of its own (bits 40-63, saturating) the references each object it reaches gets
+  from the others (`mark`), and finds what is referenced from outside, and what that reaches
+  (`scan`). The program runs between any two objects of that work and sees its own counts.
+- **One atomic check.** What is left are candidates. `collect` takes them in batches of up to 256
+  seeds and the candidates they reach, and checks each batch in one piece: every member has
+  exactly as many references as the members hold to it. Nothing in `kxgc.h` tells the collector
+  that the program moved a reference, so this check cannot be spread over steps, and it is the
+  only thing soundness rests on: `mark` and `scan` only choose the candidates. A batch that
+  passes is released and freed at once; a member that fails stays, and so does all it reaches.
+- **Held objects.** An object the cycle has reached is held: `rt_free_trace` keeps its memory
+  until the cycle lets go of it, so the collector's sets never name freed memory. `BUF` stays
+  what `kxgc.h` says, "in the root buffer": a held object the program decrements is buffered
+  again, for the next cycle.
+- **Bitmaps.** The root buffer and the two sets of a cycle are bitmaps, one bit per 8 bytes of
+  the 16 KiB pages they cover (1.6% of the objects' memory at most), not 8 bytes per object.
+- **Pacing.** A step runs for `KX_GC_BUDGET_US` (500 µs) once `threshold` roots are buffered,
+  then every 64 new roots while the cycle is unfinished. The program gets at least as long as the
+  step took; less as the buffer fills, and nothing from one threshold on, so garbage cannot be
+  buffered faster than it is collected. The clock is read once per 256 objects.
+- **Threshold.** It doubles after a cycle that reclaimed less than a quarter of what it traced
+  (as C) and halves after one that reclaimed at least half. C goes back to the minimum after any
+  productive cycle, which here made the threshold oscillate (10k, 20k, 40k, 10k).
+- **`rt_gc_idle_step(budget_us)`** is not in `kxgc.h`. It runs one step with the caller's budget
+  (e.g. JS `requestIdleCallback`) and returns the roots still buffered. A cycle only advances
+  when roots arrive or the program frees a held object; an idle program finishes it this way.
+
+Tests (`tests/native/suite.zig`): the C suite's cases, the traversal counts, and a stress test
+that runs a random mutator against the collector stepped 1, 3, 17 and 1000 objects at a time. It
+checks that exactly the reachable objects are left, with exact counts, that none is freed twice
+or while reachable, and that no freed memory stays held after the last cycle. 17 single
+mutations of the collector's source (a skipped check, a missing propagation, memory kept after a
+cycle) each fail the suite.
 
 Workload: `bench/native/cycles.zig` (`gc-cycles-<gc> [N] [scenario]`). Each iteration drops an
-a↔b cycle. In `shared_<L>`, the cycle also points into a live ring of L objects, so trial
-deletion re-traces the ring. `bench/native/cycles.sh` runs every scenario.
+a↔b cycle. In `shared_<L>`, the cycle also points into a live ring of L objects.
+`bench/native/cycles.sh` runs every scenario. Medians, Apple Silicon under unrelated load, N=1M,
+ReleaseFast, previous collector → this one:
 
-Medians of 5 runs, Apple Silicon, N=1M, ReleaseFast. *base* is the previous scheduler (a port of
-C's) with the same host and clock fixes:
+| target | scenario | ns/cycle | max pause µs | roots buffered, max | peak RSS KB |
+|---|---|---|---|---|---|
+| native | garbage | 34.7 → 45.7 | 320 → 458 | 9999 → 9999 | 2992 → 2816 |
+| native | shared_1k | 38.3 → 51.7 | 386 → 482 | 9999 → 9999 | 3024 → 2848 |
+| native | shared_20k | 77.7 → 116 | 519 → 504 | 39999 → 16775 | 6736 → 3872 |
+| native | shared_200k | 84.4 → 96.7 | 3126 → 508 | 312659 → 239359 | 24304-47712 → 24592 |
+| wasm (Node) | garbage | 49.3 → 83.9 | 482 → 517 | 9999 → 18703 | 2496 → 2624 |
+| wasm (Node) | shared_1k | 55.5 → 91.1 | 489 → 512 | 9999 → 18639 | 2368 → 2688 |
+| wasm (Node) | shared_20k | 116 → 143 | 2353 → 511 | 39999 → 28111 | 5504 → 3392 |
+| wasm (Node) | shared_200k | 145 → 154 | 9296 → 571 | 79999 → 241279 | 16320 → 19520 |
 
-| target | scenario | ns/cycle base → new | max pause µs | peak RSS MB |
+`gc-ops-incremental`, 4M operations. With 65536 live objects the collector `rc`, which collects
+nothing, peaks at 4976 KB, and at 51232 KB with `-Dbench-live=1048576`: that is the memory of the
+live objects, which no collector can go under.
+
+| | rc_pair / field_store / alloc_drop / lru_move, ns | max pause | pauses, total | peak RSS KB |
 |---|---|---|---|---|
-| native | garbage | 34 → 34 | 342 → 338 | 3.0 → 3.0 |
-| native | shared_1k | 145 → 38 | 1381 → 395 | 45.7 → 3.0 |
-| native | shared_20k | 804 → 72 | 3187 → 527 | 499 → 5.0 |
-| native | shared_200k | 107 → 85 | 5493 → 2907 | 22.4 → 27.3 |
-| wasm (Node) | garbage | 55 → 51 | 569 → 477 | 18.3 → 18.4 |
-| wasm (Node) | shared_1k | 455 → 55 | 2070 → 500 | 72.3 → 18.6 |
-| wasm (Node) | shared_20k | 1283 → 116 | 4545 → 2421 (p99 4405 → 557) | 179 → 31.4 |
-| wasm (Node) | shared_200k | 190 → 148 | 9450 → 8753 | 46.2 → 44.0 |
-
-`gc-ops` (rc_pair, field_store, alloc_drop, lru_move) is unchanged within noise on both targets.
+| native, 65536 live | 1.15 / 1.99 / 3.37 / 23.1 → 1.15 / 2.00 / 3.38 / 23.3 | 554 → 501 µs | | 5584 → 5104 |
+| native, 1M live | 28.2 / 340 / 3.4 / 2217 → 58.2 / 315 / 3.4 / 1201 | 169 ms → 0.57 ms | 24.7 → 14.1 s | 63488 → 58704 |
+| wasm (Node), 65536 live | 1.53 / 2.38 / 3.32 / 16.1 → 1.51 / 2.31 / 3.54 / 27.0 | 1106 → 502 µs | | 5888 → 4800 |
 
 Known limits:
 
-- In `shared_200k`, re-tracing the ring alone costs about 3 ms natively and 9 ms in wasm. No
-  slice fits the 500 µs budget, so pauses are bounded by about twice that cost. Native peak RSS
-  is 22% higher than base because the backlog can reach the cap before a one-pass step.
-- wasm `shared_20k` has a single max pause well above its p99.
+- **One garbage structure is checked in one piece**, about 11 ns per object: a garbage ring of
+  100k objects that dies at once is a pause of 1.3 ms, one of a million 11 ms (previous
+  collector: 14 ms). Bounding it needs a write barrier, which `kxgc.h` gives only to `epoch`.
+- **A garbage cycle costs more**: 35 → 46 ns for a bare pair, 78 → 116 in `shared_20k`, 49 → 84
+  in wasm; `rc_pair` with a million live objects 28 → 58 ns (the collector's steps share the
+  cache with it). `gc-churn-incremental` 1.8 → 2.0-2.4 ns per operation: `rt_free_trace` reads
+  the header of the block it frees.
+- **wasm memory** is 5-20% higher in `garbage`, `shared_1k` and `shared_200k`, where twice as
+  many roots are buffered at the peak.
+- **wasm `lru_move` under V8**: 16 → 27 ns with the default tiering, although the collector runs
+  14 steps in the whole measurement. With `--no-liftoff` (31.8 against 31.4) and with
+  `--liftoff-only` (46.2 against 46.7) the two builds are equal, and the hot path of the bench's
+  release function is the same code in both. That function grew by the held check of
+  `rt_free_trace`, which points at V8's inlining heuristics. Bun: 13.9 → 16.1 ns.
 
 ## epoch: pauses, returned objects, slabs
 
 What differs from `epoch/gc.c` on the mutator side, and what the port had lost.
 
 - **Target pause.** `KX_GC_TARGET_PAUSE_US` defaults to 1000 here (C: 3000), and
-  `KX_GC_FREE_BUDGET_US` to half of it.
+  `KX_GC_FREE_BUDGET_US` to a quarter of it, at least 100 µs.
 - **Freeing budget.** The port had dropped the budget of C's `process_returns`: one boundary freed
   everything the collector had returned. It is back: a boundary frees returned objects, a chunk
-  of 254 at a time, until half the target pause has passed since it began; allocations free the
-  rest, 2 to 16 per call.
+  of 254 at a time, until a quarter of the target pause has passed since it began (half, before:
+  with the wait below a boundary came to 0.6-1.0 ms); allocations free the rest, 2 to 16 per
+  call. A boundary that spent its time waiting still frees for 100 µs.
 - **Back-pressure wait.** C waits until the queue is no longer than `KX_GC_MAX_QUEUED`, however
   long the collector takes. Here the wait ends after 2/5 of the target pause; the mutator goes on
   with a longer queue and meets the same wait at its next boundary, which throttles it to one log
-  per wait. Past 524288 queued entries (16 full logs, 4 MiB: what the adaptive queue may hold
+  per wait. Past 524288 queued entries (64 full logs, 4 MiB: what the adaptive queue may hold
   anyway) the wait is unbounded again, so the queue cannot grow without limit. A wait that timed
   out counts as one over the target for the adaptive queue depth.
+- **The collector serves the queue in the middle of its work.** A cascade of deaths or a cycle
+  detection used to run to its end before the next log was applied: a million objects dying
+  together kept the queue unserved for 10-20 ms, and the mutator waited at every boundary
+  meanwhile. Both loops now look at the queue every 2048 steps (`poll`), hand over what they have
+  released and apply one queued log; its decrements join the cascade, and an object a detection
+  has marked is pinned (`MARKED_BIT`) so that a log applied meanwhile cannot free it under the
+  trace. A detection polls less often the more roots wait for the next one (up to 16 times), so a
+  program cannot make roots faster than detections retire them.
+- **Logs** hold at most 8192 entries (64 KiB) instead of 32768 (256 KiB): a full log stays in
+  the cache and a boundary hands over a quarter of the work.
+- **Deferred decrements** of a detection are a bitmap (1 KiB per 64 KiB page) instead of a stack
+  of pointers, and the stack of marked objects keeps at most 8192 entries between detections.
+  After 64 logs applied without a detection the root threshold halves, and the log size with it:
+  only a detection lowered it before, so a program without garbage cycles kept the largest logs.
+- **Mutator state** read at every allocation and logged operation is one struct on its own
+  cache lines. As separate globals it lay between counters the collector thread writes for every
+  object: `alloc_drop` cost 10 or 13 ns depending on where the linker put them.
 - **Returned objects** travel as a list of 2 KiB chunks, spliced under the lock in O(1) and freed
   once their objects are. As three stacks (C), publishing copied the batch under the lock and each
   stack kept the capacity of the largest batch ever (8 MiB apiece after a million deaths).
@@ -176,8 +231,8 @@ Not changed, and different from C: `c_traversed` counts objects MarkGray popped,
 it followed; the adaptive thresholds were tuned with the port's count.
 
 `bench/native/drop.zig` (`gc-drop-epoch [live] [rounds] [churn]`) drops a chain of `live` objects
-at once and keeps allocating. Apple M3 Max under unrelated load (load average 20-30), minimum of
-interleaved runs, before → after:
+at once and keeps allocating. Apple M3 Max under unrelated load. The first change (budget,
+returned objects, slabs), minimum of interleaved runs, before → after:
 
 | bench | time, ns | max pause | peak MB |
 |---|---|---|---|
@@ -187,12 +242,26 @@ interleaved runs, before → after:
 | ops epoch alloc_drop | 9.49 → 9.36 | 72 µs → 77 µs | 6.7 → 6.6 |
 | ops epoch rc_pair / field_store / lru_move | 2.34 → 2.35 / 3.29 → 3.24 / 21.5 → 22.8 | | |
 
-A boundary can still take longer than the target when the system deschedules the thread: one run
-in ten of the 4M drop had a 1.3-1.6 ms boundary whose time was a single chunk of frees.
+The second (queue served mid-work, smaller logs, bitmap, quarter budget), medians, that state →
+now:
 
-The synchronous collectors cannot be bounded this way: `perceus` and `incremental` trace a live
-cyclic structure in the mutator (2.7-3.5 ms in `gc-cycles shared_200k`, about 200 ms with a
-million live objects in `gc-ops -Dbench-live=1048576`).
+| bench | time, ns | pause max / p99.9 / p99, µs | peak RSS KB |
+|---|---|---|---|
+| drop, 1M objects | 12.4 → 10.1 | 625 / 623 / 22 → 77 / 35 / 18 | 50016 → 41584 |
+| drop, 4M objects | 15.0 → 11.1 | 992 / 623 / 557 → 565 / 35 / 25 | 193216 → 159328 |
+| ops epoch, 65536 live | 2.35 / 3.63 / 9.50 / 23.4 → 2.14 / 3.76 / 9.54 / 24.8 | 83 / - / 11.8 → 90 / - / 9.2 | 6624 → 6448 |
+| ops epoch, 1M live | equal within noise | 251 / - / 41 → 159 / - / 9.2 | 62592 → 53744 |
+| phases epoch | 5.50 → 5.55 | | 28096 → 28112 |
+
+A boundary is bounded by the wait (2/5 of the target) plus the freeing budget, not by one target:
+about 0.6 ms at most in these runs, apart from the times the system deschedules the thread (one
+`ops` run had a boundary of 0.84 ms, and one run in ten of the 4M drop had 1.3-1.6 ms before the
+second change).
+
+`perceus` cannot be bounded this way: it traces a live cyclic structure in the mutator (about
+3 ms in `gc-cycles shared_200k`, 170-200 ms with a million live objects in
+`gc-ops -Dbench-live=1048576`). `incremental` could not either and now can, see above; what is
+left there is the check of one garbage structure.
 
 ## Pool
 

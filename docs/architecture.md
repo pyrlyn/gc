@@ -144,6 +144,11 @@ may never get a decrement. Collect-white takes over the elements of a collection
 
 ## 6. Incremental collector
 
+This section describes `incremental/gc.c`. The Zig port (`src/incremental.zig`) is another algorithm:
+it never modifies the counts, runs between any two objects of its work and validates candidates in
+batches, so a step does not grow with the live graph. See `docs/zig-port.md`, "incremental: interleaved
+trial deletion".
+
 `incremental` processes the root buffer in slices of 64 roots; trial deletion is correct for any subset
 of candidate roots. After each slice it checks the time budget (`KX_GC_BUDGET_US`, default 500 us). Left
 over roots stay buffered and the next step starts after 2000 new roots, except live ones an earlier slice
@@ -193,7 +198,8 @@ Epoch boundary (log full, 32768 entries): the mutator hands the log over (one mu
 dead objects returned by the collector under `KX_GC_FREE_BUDGET_US` (default half the target pause, 1.5 ms); allocation also frees
 two returned objects per call. If the collector is more than `KX_GC_MAX_QUEUED` logs behind (adaptive 2-16
 by default, starting at 4; 256 KiB each), the boundary waits (back-pressure); that wait is counted as a pause.
-The Zig port (`src/epoch.zig`) targets a 1 ms pause, frees for half of it and waits for at most 2/5 of it:
+The Zig port (`src/epoch.zig`) targets a 1 ms pause, frees for a quarter of it and waits for at most 2/5 of it,
+and its collector applies queued logs in the middle of a detection or a cascade (8192-entry logs, 64 KiB):
 see `docs/zig-port.md`, "epoch: pauses, returned objects, slabs".
 
 The collector, per log: applies all increments, then all decrements (single mutator, so no count drops to
@@ -262,7 +268,7 @@ dereferencing them (acyclic objects may be freed concurrently). The unit test `g
 | `NEWKOTLIN_GC_DIR` | compile time: directory with implementations (default `<runtime>/../gc`) |
 | `KX_GC_STATS=1` | run time: print `gc-stats: gc=... collections=... reclaimed=... pause_total=... pause_max=...` (ms) at exit |
 | `KX_GC_BUDGET_US` | run time, `incremental` only: per-step budget in microseconds (default 500) |
-| `KX_GC_FREE_BUDGET_US` | run time, `epoch` only: time per epoch boundary for freeing returned objects (default half of `KX_GC_TARGET_PAUSE_US`: 1500; Zig port: 500) |
+| `KX_GC_FREE_BUDGET_US` | run time, `epoch` only: time per epoch boundary for freeing returned objects (default half of `KX_GC_TARGET_PAUSE_US`: 1500; Zig port: a quarter of its 1000, 250) |
 | `KX_GC_BOUNDARY_KEEP` | run time, `epoch` only: returned dead objects an epoch boundary leaves to allocation-paced freeing (default 16384; 0 frees everything at the boundary) |
 | `KX_GC_THREADS` | run time, `epoch` only: collector threads for parallel trial deletion (default min(cores, 4)) |
 | `KX_GC_MAX_QUEUED` | run time, `epoch` only: logs the collector may fall behind before the program waits (default: adaptive, 2-16) |
