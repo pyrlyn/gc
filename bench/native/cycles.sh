@@ -7,7 +7,7 @@ set -eu
 N="${1:-1000000}"
 RUNNER="${RUNNER:-}"
 EXT="${EXT:-}"
-for s in garbage shared_1k shared_20k shared_200k; do
+for s in garbage shared_1k shared_20k shared_200k ring_10k ring_100k ring_1m; do
   for g in ${GCS:-perceus incremental}; do
     $RUNNER "zig-out/bin/gc-cycles-$g$EXT" "$N" "$s"
   done

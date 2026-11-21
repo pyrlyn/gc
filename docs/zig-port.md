@@ -101,15 +101,33 @@ everything its roots reach, and restore it, before the program may run again: on
 of a million live objects was a pause of 170-340 ms, whatever the budget. The port:
 
 - **Counts are never modified.** A cycle takes the roots buffered so far (`take`), counts in
-  header bits of its own (bits 40-63, saturating) the references each object it reaches gets
+  header bits of its own (bits 42-63, saturating) the references each object it reaches gets
   from the others (`mark`), and finds what is referenced from outside, and what that reaches
   (`scan`). The program runs between any two objects of that work and sees its own counts.
 - **One atomic check.** What is left are candidates. `collect` takes them in batches of up to 256
   seeds and the candidates they reach, and checks each batch in one piece: every member has
   exactly as many references as the members hold to it. Nothing in `kxgc.h` tells the collector
   that the program moved a reference, so this check cannot be spread over steps, and it is the
-  only thing soundness rests on: `mark` and `scan` only choose the candidates. A batch that
-  passes is released and freed at once; a member that fails stays, and so does all it reaches.
+  only thing soundness rests on: `mark` and `scan` only choose the candidates. A member that
+  fails stays, and so does all it reaches. What passes is garbage the program cannot reach any
+  more: it is released and freed in steps, like the rest of the cycle (it used to be freed in
+  the same piece as the check, which made that piece twice as long).
+- **Generations.** An object a cycle found live is old (header bit 40). A *minor* cycle, over
+  the roots buffered since the last one, does not go into old objects, so it costs what the
+  young objects behind its roots cost and not the live heap. Roots that are old, and the roots a
+  minor cycle let go of after it had stopped at an old object (they may be garbage through it),
+  stay buffered in a set of their own for a *major* cycle, which goes everywhere and works out
+  again what is old. A major cycle is due when a quarter as many roots are deferred as the last
+  one traversed objects (at least 10000; up to four times as many while majors free less than a
+  quarter of what they traverse), or when the pool has grown by half since the last one (1 MiB
+  at least). The second rule is what bounds garbage that goes through old objects: a deferred
+  root stays buffered, so later decrements of it never reach the collector, and only the heap's
+  growth tells. The pool calls the collector before it takes a page it has no stock for
+  (`regions.grow_hook`).
+- **Dead deferred roots.** A buffered object whose count reaches zero is left to the collector
+  (`kxgc.h`). In the deferred set it would wait for a major cycle, so the set is gone through
+  when the pool has grown by 32 bytes per deferred root (256 KiB at least): one header read per
+  32 bytes allocated at most.
 - **Held objects.** An object the cycle has reached is held: `rt_free_trace` keeps its memory
   until the cycle lets go of it, so the collector's sets never name freed memory. `BUF` stays
   what `kxgc.h` says, "in the root buffer": a held object the program decrements is buffered
@@ -124,15 +142,21 @@ of a million live objects was a pause of 170-340 ms, whatever the budget. The po
   (as C) and halves after one that reclaimed at least half. C goes back to the minimum after any
   productive cycle, which here made the threshold oscillate (10k, 20k, 40k, 10k).
 - **`rt_gc_idle_step(budget_us)`** is not in `kxgc.h`. It runs one step with the caller's budget
-  (e.g. JS `requestIdleCallback`) and returns the roots still buffered. A cycle only advances
-  when roots arrive or the program frees a held object; an idle program finishes it this way.
+  (e.g. JS `requestIdleCallback`) and returns the roots still buffered, deferred ones included:
+  idle time is when a major cycle costs the program nothing. A cycle only advances when roots
+  arrive, the program frees a held object or the pool grows; an idle program finishes it this
+  way.
 
 Tests (`tests/native/suite.zig`): the C suite's cases, the traversal counts, and a stress test
 that runs a random mutator against the collector stepped 1, 3, 17 and 1000 objects at a time. It
 checks that exactly the reachable objects are left, with exact counts, that none is freed twice
 or while reachable, and that no freed memory stays held after the last cycle. 17 single
 mutations of the collector's source (a skipped check, a missing propagation, memory kept after a
-cycle) each fail the suite.
+cycle) each fail the suite. `generations` checks the rules above one by one on a hand-built
+graph: young garbage that refers to an old object is freed by a minor cycle, old garbage and
+garbage through an old object by a major one, started by the roots or by the pool's growth alone,
+which also frees a deferred root that died. The stress test runs minor cycles, major cycles and
+sweeps in turn.
 
 Workload: `bench/native/cycles.zig` (`gc-cycles-<gc> [N] [scenario]`). Each iteration drops an
 a↔b cycle. In `shared_<L>`, the cycle also points into a live ring of L objects.
@@ -160,17 +184,63 @@ live objects, which no collector can go under.
 | native, 1M live | 28.2 / 340 / 3.4 / 2217 → 58.2 / 315 / 3.4 / 1201 | 169 ms → 0.57 ms | 24.7 → 14.1 s | 63488 → 58704 |
 | wasm (Node), 65536 live | 1.53 / 2.38 / 3.32 / 16.1 → 1.51 / 2.31 / 3.54 / 27.0 | 1106 → 502 µs | | 5888 → 4800 |
 
+### Generations and stepwise freeing: before → after
+
+Same machine and method (medians of 3, under unrelated load). `shared_200k` no longer buffers
+garbage while the live ring is traversed again and again: 190 full traversals per million cycles
+became a handful of major ones.
+
+| target | scenario | ns/cycle | max pause µs | roots buffered, max | peak RSS KB |
+|---|---|---|---|---|---|
+| native | garbage | 46.9 → 47.1 | 450 → 458 | 9999 → 9999 | 2832 → 2816 |
+| native | shared_1k | 52.4 → 50.8 | 501 → 492 | 9999 → 9999 | 2864 → 2864 |
+| native | shared_20k | 111 → 52.6 | 504 → 501 | 16839 → 14927 | 3904 → 3808 |
+| native | shared_200k | 95.2 → 65.7 | 510 → 501 | 239615 → 19999 | 24656 → 12864 |
+| wasm (Node) | garbage | 86.1 → 91.4 | 512 → 503 | 18767 → 18063 | 2624 → 2624 |
+| wasm (Node) | shared_1k | 97.1 → 94.8 | 542 → 645 | 18767 → 17039 | 2688 → 2688 |
+| wasm (Node) | shared_20k | 142 → 98.7 | 553 → 506 | 28175 → 17871 | 3392 → 3392 |
+| wasm (Node) | shared_200k | 156 → 133 | 683 → 525 | 241471 → 23335 | 19520 → 11264 |
+
+The 200000 live objects of `shared_200k` are 8 MB and an idle process 2 MB: 12.9 MB is what is
+left above them. "Roots buffered" counts the roots no cycle has decided yet, not the deferred
+roots of old objects (a bit each).
+
+`gc-ops-incremental`, 4M operations per op:
+
+| | rc_pair / field_store / alloc_drop / lru_move, ns | max pause | pauses, total | peak RSS KB |
+|---|---|---|---|---|
+| native, 65536 live | 1.13 / 1.93 / 3.30 / 23.6 → 1.16 / 2.03 / 3.35 / 23.1 | 501 → 501 µs | 2.0 → 1.8 ms | 5120 → 5136 |
+| native, 1M live | 57.5 / 183 / 3.39 / 1044 → 1.15 / 5.4 / 3.5 / 72 | 534 → 501 µs | 22.6 s → 31 ms | 58656 → 52528 |
+| wasm (Node), 65536 live | 1.50 / 2.33 / 3.56 / 26.5 → 1.56 / 2.32 / 3.52 / 27.3 | 509 → 503 µs | 5.2 → 6.8 ms | 4800 → 4800 |
+
+With a million live objects the program now runs as with `rc` (1.00 / 4.75 / 3.37 / 69.8 ns,
+51232 KB): the list is traversed once, is old from then on, and nothing in it becomes garbage.
+
+One garbage ring at a time, collected in idle steps of 500 µs (`gc-cycles-incremental 4000000
+ring_<L>`), longest step:
+
+| | ring of 10k | 100k | 1M |
+|---|---|---|---|
+| native | 0.18 → 0.19 ms | 1.18 → 0.64 ms | 12.0 → 5.6 ms |
+| wasm (Node) | 0.96 → 0.58 ms | 4.2 → 1.9 ms | 25.7 → 11.9 ms |
+
 Known limits:
 
-- **One garbage structure is checked in one piece**, about 11 ns per object: a garbage ring of
-  100k objects that dies at once is a pause of 1.3 ms, one of a million 11 ms (previous
-  collector: 14 ms). Bounding it needs a write barrier, which `kxgc.h` gives only to `epoch`.
-- **A garbage cycle costs more**: 35 → 46 ns for a bare pair, 78 → 116 in `shared_20k`, 49 → 84
-  in wasm; `rc_pair` with a million live objects 28 → 58 ns (the collector's steps share the
-  cache with it). `gc-churn-incremental` 1.8 → 2.0-2.4 ns per operation: `rt_free_trace` reads
+- **One garbage structure is checked in one piece**, about 5 ns per object natively and 11 in
+  wasm (it was 11 and 25 with the freeing in the same piece): a step is the budget plus that, so
+  a garbage ring of 100k objects that dies at once is a step of 0.6-0.7 ms natively and one of a
+  million 5.6 ms. Bounding it needs a write barrier, which `kxgc.h` gives only to `epoch`.
+- **Old garbage waits for a major cycle**: until a quarter as many roots are deferred as the
+  last major cycle traversed objects, or the pool has grown by half (1 MiB at least). The pool
+  is the traced objects (and the acyclic ones in wasm): memory that old garbage holds outside
+  it, natively the acyclic objects and the storage of collections, is not counted.
+- **Internal reference counts saturate at 22 bits** (24 before): an object with more than four
+  million references from the objects of one cycle passes for live.
+- **A garbage cycle costs more than with `perceus`**: 35 → 47 ns for a bare pair, 49 → 91 in
+  wasm. `gc-churn-incremental` 1.8 → 2.0-2.4 ns per operation: `rt_free_trace` reads
   the header of the block it frees.
-- **wasm memory** is 5-20% higher in `garbage`, `shared_1k` and `shared_200k`, where twice as
-  many roots are buffered at the peak.
+- **wasm memory** is 5-15% higher than with the previous collector in `garbage` and `shared_1k`,
+  where twice as many roots are buffered at the peak.
 - **wasm `lru_move` under V8**: 16 → 27 ns with the default tiering, although the collector runs
   14 steps in the whole measurement. With `--no-liftoff` (31.8 against 31.4) and with
   `--liftoff-only` (46.2 against 46.7) the two builds are equal, and the hot path of the bench's
