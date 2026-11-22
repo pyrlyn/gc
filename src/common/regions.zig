@@ -273,17 +273,30 @@ const Pool = struct {
         const c = &self.classes[cls];
         const bytes = cls << RT_SIZE_CLASS_SHIFT;
         std.debug.assert(bytes != 0); // objects have a header: size 0 is not an object
+        if (take(c, bytes)) |p| return p;
+        // The retry loop around refill stays out of line: inside this inlined path it made every
+        // allocation save callee-saved registers for the call (short_lived 18% slower under perceus).
+        return allocSlow(self.id, cls);
+    }
+
+    inline fn take(c: *Class, bytes: usize) ?*anyopaque {
+        if (c.free) |p| {
+            c.free = link(p).*;
+            return p;
+        }
+        if (@intFromPtr(c.end) - @intFromPtr(c.ptr) >= bytes) {
+            const p = c.ptr;
+            c.ptr = p + bytes;
+            return @ptrCast(@alignCast(p));
+        }
+        return null;
+    }
+
+    noinline fn allocSlow(id: usize, cls: usize) *anyopaque {
+        const c = classAt(id * RT_CLASSES + cls - 1);
         while (true) {
-            if (c.free) |p| {
-                c.free = link(p).*;
-                return p;
-            }
-            if (@intFromPtr(c.end) - @intFromPtr(c.ptr) >= bytes) {
-                const p = c.ptr;
-                c.ptr = p + bytes;
-                return @ptrCast(@alignCast(p));
-            }
-            refill(self.id, cls);
+            refill(id, cls);
+            if (take(c, cls << RT_SIZE_CLASS_SHIFT)) |p| return p;
         }
     }
 
