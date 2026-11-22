@@ -428,9 +428,16 @@ pub export fn rt_cc_dead(p: ?*anyopaque) void {
     }
 }
 
+/// Microseconds to nanoseconds, negative as 0 and saturating. Clamped before a plain multiply:
+/// LLVM turns `*|` on a value known non-negative into @llvm.umul.fix.sat.i63, which the KotlinX JS
+/// backend (--target=js translates this collector's bitcode) cannot translate.
+fn usToNs(us: i64) i64 {
+    return std.math.clamp(us, 0, std.math.maxInt(i64) / 1000) * 1000;
+}
+
 fn budgetNs() i64 {
     if (cc_budget_ns < 0) {
-        cc_budget_ns = @max(host.getenv_i64("KX_GC_BUDGET_US", CC_DEFAULT_BUDGET_US), 0) *| 1000;
+        cc_budget_ns = usToNs(host.getenv_i64("KX_GC_BUDGET_US", CC_DEFAULT_BUDGET_US));
     }
     return cc_budget_ns;
 }
@@ -956,7 +963,7 @@ pub export fn rt_gc_collect() void {
 /// No-op while a step or a release drain is in progress.
 pub export fn rt_gc_idle_step(budget_us: i64) usize {
     if (host.rt_rel_draining == 0 and !cc_running and (phase != .idle or pending.count != 0 or deferred.count != 0)) {
-        step(@max(budget_us, 0) *| 1000, false, true);
+        step(usToNs(budget_us), false, true);
     }
     return pending.count + deferred.count + @intFromBool(phase != .idle);
 }
