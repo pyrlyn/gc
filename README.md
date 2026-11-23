@@ -1,6 +1,7 @@
-# KotlinX memory manager (GC)
+# zgc: KotlinX memory manager (GC)
 
-Standalone home of the [KotlinX](https://github.com/pyrlyn/kotlinx) garbage collectors, their tests and
+`zgc` (repository [pyrlyn/zgc](https://github.com/pyrlyn/zgc), formerly `pyrlyn/gc`; the Zig package is still `kxgc`) is the
+standalone home of the [KotlinX](https://github.com/pyrlyn/kotlinx) garbage collectors, their tests and
 benchmarks. Extracted from `pyrlyn/kotlinx` at `9d9c1af` (`compiler/gc/` -> repository root,
 `bench/gc/` -> [`bench/`](bench/)) following [`docs/extraction-plan.md`](docs/extraction-plan.md).
 
