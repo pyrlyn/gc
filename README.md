@@ -1,32 +1,33 @@
-# KotlinX memory manager (GC)
+# zgc: ZKotlin memory manager (GC)
 
-Standalone home of the [KotlinX](https://github.com/pyrlyn/kotlinx) garbage collectors, their tests and
-benchmarks. Extracted from `pyrlyn/kotlinx` at `9d9c1af` (`compiler/gc/` -> repository root,
+`zgc` (repository [pyrlyn/zgc](https://github.com/pyrlyn/zgc), formerly `pyrlyn/gc`; the Zig package is still `kxgc`) is the
+standalone home of the [ZKotlin](https://github.com/pyrlyn/zkotlin) garbage collectors, their tests and
+benchmarks. Extracted from `pyrlyn/kotlinx` (now [pyrlyn/zkotlin](https://github.com/pyrlyn/zkotlin)) at `9d9c1af` (`compiler/gc/` -> repository root,
 `bench/gc/` -> [`bench/`](bench/)) following [`docs/extraction-plan.md`](docs/extraction-plan.md).
 
-## How KotlinX uses this repository
+## How ZKotlin uses this repository
 
-- KotlinX pins an exact commit of this repository as a git submodule at `compiler/gc`, so the default
+- ZKotlin pins an exact commit of this repository as a git submodule at `compiler/gc`, so the default
   `NEWKOTLIN_GC_DIR` (`<runtime dir>/../gc`) points at it and nothing else changes for the compiler.
-  `bench/gc` in KotlinX is a symlink to `compiler/gc/bench`.
-- The only contract is [`kxgc.h`](kxgc.h). It defines `KXGC_API_VERSION`; KotlinX checks it at compile
+  `bench/gc` in ZKotlin is a symlink to `compiler/gc/bench`.
+- The only contract is [`kxgc.h`](kxgc.h). It defines `KXGC_API_VERSION`; ZKotlin checks it at compile
   time. Any change to a signature or to the object layout is a breaking change: bump the version and
-  update KotlinX in the same pin-bump PR.
+  update ZKotlin in the same pin-bump PR.
 - Collectors stay single-file C translation units (`<name>/gc.c`), compiled by `newkotlinc` together with
   the runtime and the program (`clang -O3 -flto`). No prebuilt library.
 
 ## Working on the GC
 
-The tests and benchmarks need a KotlinX checkout (runtime sources and a `newkotlinc` build). Work inside
-KotlinX's submodule:
+The tests and benchmarks need a ZKotlin checkout (runtime sources and a `newkotlinc` build). Work inside
+ZKotlin's submodule:
 
 ```
-git clone --recurse-submodules https://github.com/pyrlyn/kotlinx && cd kotlinx/compiler && ./build.sh
+git clone --recurse-submodules https://github.com/pyrlyn/zkotlin && cd zkotlin/compiler && ./build.sh
 cd gc/tests/zig && zig build gc        # full Zig GC suite (see tests/zig/README.md)
 cd ../../bench/zig && zig build test   # Zig regression benchmarks against baselines.zon
 ```
 
-To release a GC change: merge it here, then open a KotlinX PR that bumps the `compiler/gc` submodule and
+To release a GC change: merge it here, then open a ZKotlin PR that bumps the `compiler/gc` submodule and
 runs `compiler/test.sh` plus the GC benchmarks.
 
 ## Overview

@@ -1,4 +1,4 @@
-# KotlinX memory management: architecture
+# zgc memory management: architecture
 
 This document explains how memory is managed in programs compiled by the KotlinX compiler
 (`newkotlinc`). For the list of implementations and how to select one, see [`../README.md`](../README.md).
