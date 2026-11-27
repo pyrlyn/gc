@@ -1,4 +1,4 @@
-# zgc: ZKotlin memory manager (GC)
+<h1><picture><source media="(prefers-color-scheme: dark)" srcset="brand/logo-dark.svg"><img src="brand/logo.svg" width="32" height="32" alt="" align="absmiddle"></picture> zgc: ZKotlin memory manager (GC)</h1>
 
 `zgc` (repository [pyrlyn/zgc](https://github.com/pyrlyn/zgc), formerly `pyrlyn/gc`; the Zig package is still `kxgc`) is the
 standalone home of the [ZKotlin](https://github.com/pyrlyn/zkotlin) garbage collectors, their tests and
